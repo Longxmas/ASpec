@@ -17,6 +17,7 @@
 
 # Adapted from AngelSpec tests/test_direct_cp.py (Apache-2.0).
 
+import inspect
 import math
 import os
 
@@ -352,3 +353,84 @@ def test_direct_cp_sparse_tiles_cover_visible_tokens_and_only_mark_full_tiles():
 
     assert torch.all(expected_any <= (partial | full))
     assert torch.all(full <= expected_all)
+
+
+@pytest.fixture(scope="module")
+def cold_dispatch_caches():
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("requires SM90+ CUDA")
+    from aspec.compat.fa4_cutlass import (
+        configure_fa4_cutlass_compilation,
+        install_ampere_helpers_shim,
+    )
+
+    install_ampere_helpers_shim()
+    configure_fa4_cutlass_compilation()
+    import cutlass.cute as cute
+    from flash_attn.cute import cache_utils, interface
+
+    # Start cold, then retain entries across semantic variants as well as
+    # lengths. A bad hash that aliases two different masks must fail numerics.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(interface._flash_attn_fwd, "compile_cache", cache_utils.JITCache())
+        patch.setattr(interface._flash_attn_bwd, "compile_cache", cache_utils.JITCache())
+        yield cute
+
+
+@pytest.mark.skipif(
+    os.getenv("ASPEC_RUN_GPU_INTEGRATION") != "1",
+    reason="set ASPEC_RUN_GPU_INTEGRATION=1 to exercise real FA4 compilation",
+)
+@pytest.mark.parametrize("context_window,query_window,causal", [
+    (None, None, False), (97, None, False), (None, 3, False), (None, 3, True),
+])
+def test_variable_lengths_reuse_mask_kernels_and_match_math(monkeypatch, cold_dispatch_caches, context_window, query_window, causal):
+    cute = cold_dispatch_caches
+    original_compile = cute.compile
+    compiled_families = set()
+
+    def observe_compile(*args, **kwargs):
+        name = type(args[0]).__name__
+        if name.startswith(("FlashAttentionForwardSm", "FlashAttentionBackwardSm")):
+            caller = inspect.currentframe().f_back.f_locals
+            # FA4 deliberately separates singleton block strides in backward.
+            # Preserve its ABI/tile families, but never create another kernel
+            # merely because the modifier captured a different row length.
+            mask_hash = caller["mask_mod_hash"]
+            family = (name, tuple("<mask>" if isinstance(value, str) and value == mask_hash else value
+                                  for value in caller["compile_key"]))
+            assert family not in compiled_families, "row geometry recompiled an existing FA4 dispatch family"
+            compiled_families.add(family)
+        return original_compile(*args, **kwargs)
+
+    monkeypatch.setattr(cute, "compile", observe_compile)
+    for index, (context, blocks) in enumerate([(129, 4), (257, 9), (641, 13), (257, 9)]):
+        torch.manual_seed(31 + index)
+        queries = blocks * 7
+        shapes = [(1, 4, queries, 128), (1, 1, context, 128), (1, 1, context, 128),
+                  (1, 1, queries, 128), (1, 1, queries, 128)]
+        actual_inputs = [torch.randn(*shape, device="cuda", dtype=torch.bfloat16, requires_grad=True) for shape in shapes]
+        reference_inputs = [value.detach().clone().requires_grad_() for value in actual_inputs]
+        anchors = torch.randint(context, (1, blocks), device="cuda").sort().values
+        anchors[0, 0], anchors[0, -1] = 0, context - 1
+        keep = torch.ones_like(anchors, dtype=torch.bool)
+        keep[0, -2] = False
+
+        def metadata(backend):
+            return DirectCPMetadata(
+                anchor_positions=anchors, block_keep_mask=keep,
+                context_position_ids=torch.arange(context, device="cuda")[None],
+                block_size=7, cp_rank=0, cp_size=1, group=None, sequence_length=context,
+                backend=backend, fa4_sparse=True, context_window=context_window,
+                query_window=query_window, draft_is_causal=causal,
+            )
+
+        actual, actual_lse = direct_cp_attention(*actual_inputs, metadata("fa4"))
+        reference, reference_lse = direct_cp_attention(*reference_inputs, metadata("math"))
+        torch.testing.assert_close(actual, reference, rtol=5e-2, atol=5e-2)
+        torch.testing.assert_close(actual_lse, reference_lse, rtol=5e-2, atol=5e-2)
+        upstream = torch.randn_like(actual)
+        (actual * upstream).sum().backward()
+        (reference * upstream).sum().backward()
+        for value, expected in zip(actual_inputs, reference_inputs, strict=True):
+            torch.testing.assert_close(value.grad, expected.grad, rtol=8e-2, atol=8e-2)

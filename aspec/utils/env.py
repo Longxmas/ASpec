@@ -35,6 +35,8 @@ _ASPEC_ENV_KEYS = [
     "ASPEC_LOG_LEVEL",
     "TP_SOCKET_IFNAME",
     "CUTE_DSL_CACHE_DIR",
+    "FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED",
+    "FLASH_ATTENTION_CUTE_DSL_CACHE_DIR",
     "ASPEC_FLASH_ATTN_OPT_LEVEL",
     "ASPEC_RUN_ID",
     "ASPEC_ATTEMPT_ID",
@@ -81,6 +83,7 @@ def get_aspec_env_vars(args=None) -> dict[str, str]:
     if getattr(args, "cluster_mode", "single_node") == "static_multi_node":
         # Ray is started from each node's own venv/environment. A driver's
         # library/cache paths must not overwrite another node's local layout.
-        for key in ("LD_LIBRARY_PATH", "PYTHONPATH", "HF_HOME", "CUTE_DSL_CACHE_DIR", "ASPEC_LOG_DIR"):
+        for key in ("LD_LIBRARY_PATH", "PYTHONPATH", "HF_HOME", "CUTE_DSL_CACHE_DIR",
+                    "FLASH_ATTENTION_CUTE_DSL_CACHE_DIR", "ASPEC_LOG_DIR"):
             env.pop(key, None)
     return env

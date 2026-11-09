@@ -66,3 +66,16 @@ def test_aspec_actor_env_forwards_explicit_pythonpath(monkeypatch):
     monkeypatch.setenv("PYTHONPATH", python_path)
 
     assert get_aspec_env_vars()["PYTHONPATH"] == python_path
+
+
+def test_fa4_disk_cache_policy_reaches_actor_processes(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED", "1")
+    monkeypatch.setenv("FLASH_ATTENTION_CUTE_DSL_CACHE_DIR", "/task-local/compiled-fa4")
+    env = get_aspec_env_vars()
+    assert env["FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED"] == "1"
+    assert env["FLASH_ATTENTION_CUTE_DSL_CACHE_DIR"] == "/task-local/compiled-fa4"
+    node_local = get_aspec_env_vars(SimpleNamespace(cluster_mode="static_multi_node"))
+    assert node_local["FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED"] == "1"
+    assert "FLASH_ATTENTION_CUTE_DSL_CACHE_DIR" not in node_local

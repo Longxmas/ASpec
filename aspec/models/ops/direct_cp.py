@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
@@ -477,16 +479,18 @@ def _apply_block_keep(
 
 @lru_cache(maxsize=None)
 def _build_fa4_mask(
-    context_length: int,
     block_size: int,
-    num_blocks: int,
-    query_length: int,
-    key_length: int,
     packed: bool,
     context_window: Optional[int] = None,
     query_window: Optional[int] = None,
     draft_is_causal: bool = False,
 ):
+    """Specialize only on mask semantics; row geometry stays on the device.
+
+    FA4 hashes modifier closures. Capturing concrete row lengths creates fresh
+    forward/backward kernels throughout a variable-length corpus. Auxiliary
+    tensor dimensions are dynamic in FA4, so they also provide safe bounds.
+    """
     import cutlass
     import cutlass.cute as cute
     from flash_attn.cute import utils
@@ -496,7 +500,7 @@ def _build_fa4_mask(
         index_fragment = cute.make_rmem_tensor(1, cutlass.Int32)
         index_fragment.store(index)
         value_fragment = cute.make_rmem_tensor(1, cutlass.Int32)
-        value_fragment[0] = aux[batch[0], cutlass.min(index_fragment[0], num_blocks - 1)]
+        value_fragment[0] = aux[batch[0], cutlass.min(index_fragment[0], aux.shape[1] - 1)]
         return value_fragment.load()
 
     @cute.jit
@@ -504,7 +508,7 @@ def _build_fa4_mask(
         index_fragment = cute.make_rmem_tensor(1, cutlass.Int32)
         index_fragment.store(index)
         value_fragment = cute.make_rmem_tensor(1, cutlass.Int32)
-        value_fragment[0] = aux[batch[0], cutlass.min(index_fragment[0], query_length - 1)]
+        value_fragment[0] = aux[batch[0], cutlass.min(index_fragment[0], aux.shape[1] - 1)]
         return value_fragment.load()
 
     @cute.jit
@@ -512,7 +516,7 @@ def _build_fa4_mask(
         index_fragment = cute.make_rmem_tensor(1, cutlass.Int32)
         index_fragment.store(index)
         value_fragment = cute.make_rmem_tensor(1, cutlass.Int32)
-        value_fragment[0] = aux[batch[0], cutlass.min(index_fragment[0], key_length - 1)]
+        value_fragment[0] = aux[batch[0], cutlass.min(index_fragment[0], aux.shape[1] - 1)]
         return value_fragment.load()
 
     @cute.jit
@@ -528,8 +532,9 @@ def _build_fa4_mask(
             key_token_keep,
             anchor_doc_ids,
             key_context_doc_ids,
+            context_length,
         ) = aux_tensors
-        context_len = utils.scalar_to_ssa(context_length, cutlass.Int32)
+        context_len = utils.scalar_to_ssa(context_length[0], cutlass.Int32)
         zero = utils.scalar_to_ssa(0, cutlass.Int32)
         query_block = read_query_aux(query_blocks, batch, query_index)
         anchor = read_block_aux(anchors, batch, query_block)
@@ -566,6 +571,14 @@ def _build_fa4_mask(
             & (key_valid > zero)
         )
 
+    # Nested cute.jit helpers otherwise contribute process-specific function
+    # addresses to FA4's closure hash. Bind every remaining specialization and
+    # the complete factory source so disk artifacts are reusable across ranks
+    # while code or semantics changes still invalidate the key.
+    identity = (block_size, packed, context_window, query_window, draft_is_causal)
+    mask_mod.__cute_hash__ = hashlib.sha256(
+        (inspect.getsource(_build_fa4_mask) + repr(identity)).encode()
+    ).hexdigest()
     return mask_mod
 
 
@@ -591,11 +604,7 @@ def _fa4_partial(
 
     batch, heads, queries, _ = query.shape
     mask_mod = _build_fa4_mask(
-        metadata.context_length,
         metadata.block_size,
-        metadata.num_blocks,
-        queries,
-        key.shape[2],
         metadata.context_doc_ids is not None,
         metadata.context_window,
         metadata.query_window,
@@ -670,6 +679,13 @@ def _fa4_partial(
         ),
         dim=1,
     ).contiguous()
+    geometry_key = ("mask_context_length", query.device, metadata.context_length)
+    context_length_tensor = metadata._fa4_cache.get(geometry_key)
+    if context_length_tensor is None:
+        context_length_tensor = torch.full(
+            (1,), metadata.context_length, dtype=torch.int32, device=query.device
+        )
+        metadata._fa4_cache[geometry_key] = context_length_tensor
     aux_tensors = [
         metadata.anchor_positions.to(torch.int32).contiguous(),
         metadata.block_keep_mask.to(torch.int32).contiguous(),
@@ -680,6 +696,7 @@ def _fa4_partial(
         key_token_keep.contiguous(),
         anchor_doc_ids.contiguous(),
         key_context_doc_ids,
+        context_length_tensor,
     ]
     from aspec.models.ops.fa4_sparse import fixed_mask_aux
 
