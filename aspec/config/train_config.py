@@ -251,6 +251,13 @@ class TrainingConfig:
     dspark_loss_decay_gamma: float = 4.0
     dspark_ce_loss_alpha: float = 0.1
     dspark_l1_loss_alpha: float = 0.9
+    # Independent sampling transforms for the DSpark L1 distributions.
+    dspark_l1_target_temperature: float = 1.0
+    dspark_l1_target_top_p: float = 1.0
+    dspark_l1_target_top_k: int = -1
+    dspark_l1_draft_temperature: float = 1.0
+    dspark_l1_draft_top_p: float = 1.0
+    dspark_l1_draft_top_k: int = -1
     dspark_confidence_head_alpha: float = 1.0
 
 

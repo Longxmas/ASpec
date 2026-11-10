@@ -341,6 +341,26 @@ def _load_draft_descriptor(config: DictConfig) -> dict[str, Any]:
     except ValueError as exc:
         raise PlanCompileError(str(exc)) from exc
     backend = _select(config, "training.attention_backend")
+    l1_sampling_enabled = False
+    for side in ("target", "draft"):
+        prefix = f"training.dspark_l1_{side}_"
+        temperature = _select(config, prefix + "temperature", 1.0)
+        top_p = _select(config, prefix + "top_p", 1.0)
+        top_k = _select(config, prefix + "top_k", -1)
+        if (isinstance(temperature, bool) or not isinstance(temperature, (int, float))
+                or not math.isfinite(temperature) or temperature <= 0):
+            raise PlanCompileError(f"{prefix}temperature must be finite and positive")
+        if (isinstance(top_p, bool) or not isinstance(top_p, (int, float))
+                or not math.isfinite(top_p) or not 0 < top_p <= 1):
+            raise PlanCompileError(f"{prefix}top_p must be in (0, 1]")
+        if type(top_k) is not int or (top_k != -1 and top_k < 1):
+            raise PlanCompileError(f"{prefix}top_k must be -1 or a positive integer")
+        l1_sampling_enabled |= (temperature, top_p, top_k) != (1.0, 1.0, -1)
+    if l1_sampling_enabled:
+        indexer_warmup = any((attention.get(kind) or {}).get("training_stage") == "indexer_warmup"
+                            for kind in ("csa", "qsa", "dsa"))
+        if family != "dspark" or _select(config, "training.dspark_l1_loss_alpha") <= 0 or indexer_warmup:
+            raise PlanCompileError("DSpark L1 sampling requires DSpark with positive L1 weight outside indexer warmup")
     eagle3_target_cache = _select(config, "training.eagle3_target_cache", "lazy")
     eagle3_loss_checkpointing = _select(
         config, "training.eagle3_loss_gradient_checkpointing"
@@ -1262,6 +1282,9 @@ def _workload(
                 config, "training.dspark_confidence_head_alpha"
             ),
         }
+        for side in ("target", "draft"):
+            for name, default in (("temperature", 1.0), ("top_p", 1.0), ("top_k", -1)):
+                objective[f"l1_{side}_{name}"] = _select(config, f"training.dspark_l1_{side}_{name}", default)
     else:
         objective = {
             "family": family,

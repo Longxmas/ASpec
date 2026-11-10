@@ -85,6 +85,8 @@ class DSparkModel(DFlashModel):
         deterministic_anchor_sampling: bool = False,
         anchor_seed: int = 0,
         anchor_sampling_scope: str = "row",
+        l1_target_sampling: tuple[float, float, int] = (1.0, 1.0, -1),
+        l1_draft_sampling: tuple[float, float, int] = (1.0, 1.0, -1),
     ):
         # Reuse DFlash anchor/mask/noise machinery. The "decay" objective drives
         # the per-within-block position weighting shared by all DSpark terms.
@@ -104,6 +106,8 @@ class DSparkModel(DFlashModel):
         self.ce_loss_alpha = float(ce_loss_alpha)
         self.l1_loss_alpha = float(l1_loss_alpha)
         self.confidence_head_alpha = float(confidence_head_alpha)
+        self.l1_sampling = (l1_target_sampling, l1_draft_sampling)
+        self.l1_sampling_enabled = self.l1_sampling != ((1.0, 1.0, -1), (1.0, 1.0, -1))
         self.l1_loss_backend = None
         self.l1_kernel_invocations = {}
         self._use_l1_kernel_optimizations = True
@@ -550,7 +554,8 @@ class DSparkModel(DFlashModel):
         accept_rate = None
         if aligned_target_hidden is not None:
             indexed_teacher = (
-                self._use_l1_kernel_optimizations and cached_target_positions is not None
+                not self.l1_sampling_enabled
+                and self._use_l1_kernel_optimizations and cached_target_positions is not None
                 and use_sm90_tiled_l1(logits, cached_target_logits, True)
             )
             target_indices = None
@@ -570,7 +575,9 @@ class DSparkModel(DFlashModel):
                 target_logits = cached_target_logits if cached_target_logits is not None else F.linear(
                     aligned_target_hidden.reshape(-1, aligned_target_hidden.shape[-1]), head_weight
                 ).view_as(logits)
-            if indexed_teacher or use_sm90_tiled_l1(logits, target_logits):
+            if not self.l1_sampling_enabled and (
+                indexed_teacher or use_sm90_tiled_l1(logits, target_logits)
+            ):
                 from aspec.models.ops.tiled_l1 import tiled_l1_from_logits
 
                 l1 = tiled_l1_from_logits(logits, target_logits, target_indices=target_indices,
@@ -579,7 +586,8 @@ class DSparkModel(DFlashModel):
                 kernel = ("indexed_" if indexed_teacher else "") + self.l1_loss_backend
                 self.l1_kernel_invocations[kernel] = self.l1_kernel_invocations.get(kernel, 0) + 1
             else:
-                l1 = compiled_l1_from_logits(logits, target_logits)
+                l1 = (compiled_l1_from_logits(logits, target_logits, *self.l1_sampling)
+                      if self.l1_sampling_enabled else compiled_l1_from_logits(logits, target_logits))
                 self.l1_loss_backend = "torch_compiled"
             if self.l1_loss_alpha > 0:
                 l1_num = (l1 * weights).sum()

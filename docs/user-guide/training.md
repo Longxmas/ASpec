@@ -179,3 +179,25 @@ mooncake:
 Run `aspec --config offline.yaml --dry-run`, then `aspec --config offline.yaml`. CPU actors replay the features while the Target checkpoint supplies frozen embeddings and the teacher head. Evaluation uses the saved eval split; checkpoint and exact-resume commands are unchanged.
 
 Dataset metadata binds the Target configuration, tokenizer and weights by SHA256, plus the feature layers, dtype, layout and normalization convention. Replay validates sample checksums and tensor shapes. Set `training.max_seq_length` to cover all recorded sequences; changing preprocessing requires regenerating the dataset. The dataset identity participates in exact-resume validation.
+
+## DSpark L1 sampling distributions
+
+DSpark L1 supports independent Target and Draft sampling parameters. Both sides default to `temperature=1.0`, `top_p=1.0` and `top_k=-1` (disabled). Configure either side or both:
+
+```yaml
+training:
+  dspark_l1_target_temperature: 0.8
+  dspark_l1_target_top_p: 0.95
+  dspark_l1_target_top_k: 50
+  dspark_l1_draft_temperature: 1.0
+  dspark_l1_draft_top_p: 0.9
+  dspark_l1_draft_top_k: 40
+```
+
+Each side computes $p=\operatorname{softmax}(z/T)$ in FP32. Top-k and top-p select from this full distribution, then renormalize their intersection, following the pinned SGLang joint-filter convention. Ties use increasing token ID. Top-p retains tokens whose preceding cumulative mass is at most top-p. Temperature must be finite and positive, top-p in $(0,1]$, and top-k `-1` or a positive integer; top-k at least the vocabulary size keeps every token.
+
+The transformed distributions define $L_{\mathrm{L1}}=\sum_i|P_s(i)-Q_s(i)|$ and the confidence label $\alpha=\operatorname{stopgrad}(1-L_{\mathrm{L1}}/2)$. Acceptance metrics use the same distributions. CE uses the original Draft logits, including Markov-head correction. Loss coefficients and masks are unchanged, with no $T^2$ multiplier. These parameters are independent of `decode.*` and apply only to DSpark with positive L1 weight outside indexer warmup.
+
+Draft gradients flow through retained logits and their normalization. Discrete selection has no gradient: top-k one, or disjoint Target/Draft supports, gives zero L1 gradient while the supports stay fixed. CE retains its own gradients.
+
+Default settings retain the existing kernels; non-default settings use the `torch_compiled` L1 path. LM-head computation is unchanged. Exact resume requires the same sampling settings, treating missing fields in older checkpoints as defaults; use weights-only initialization to change them.

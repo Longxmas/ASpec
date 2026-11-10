@@ -80,6 +80,16 @@ class DSparkTrainer(DFlashTrainer):
             loss_decay_gamma=self.loss_decay_gamma,
             ce_loss_alpha=self.ce_loss_alpha,
             l1_loss_alpha=self.l1_loss_alpha,
+            l1_target_sampling=(
+                getattr(self.args, "dspark_l1_target_temperature", 1.0),
+                getattr(self.args, "dspark_l1_target_top_p", 1.0),
+                getattr(self.args, "dspark_l1_target_top_k", -1),
+            ),
+            l1_draft_sampling=(
+                getattr(self.args, "dspark_l1_draft_temperature", 1.0),
+                getattr(self.args, "dspark_l1_draft_top_p", 1.0),
+                getattr(self.args, "dspark_l1_draft_top_k", -1),
+            ),
             confidence_head_alpha=self.confidence_head_alpha,
             deterministic_anchor_sampling=getattr(
                 self.args, "deterministic_anchor_sampling", False

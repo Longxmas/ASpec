@@ -56,11 +56,38 @@ def _softmax_from_logits(logits: torch.Tensor) -> torch.Tensor:
     return torch.exp(logits_f32 - torch.logsumexp(logits_f32, dim=-1, keepdim=True))
 
 
+def sampling_logits(logits: torch.Tensor, sampling=(1.0, 1.0, -1)) -> torch.Tensor:
+    """Differentiable logits on joint top-k/top-p support; ties use token-ID order.
+
+    Both filters use the full temperature-scaled distribution, matching the
+    pinned SGLang joint-filter convention. The discrete support has no gradient.
+    """
+    if sampling == (1.0, 1.0, -1):
+        return logits
+    temperature, top_p, top_k = sampling
+    scaled = logits.float()
+    if temperature != 1.0:
+        scaled = (scaled - scaled.amax(dim=-1, keepdim=True)) / temperature
+    vocab = scaled.shape[-1]
+    if top_p == 1.0 and (top_k == -1 or top_k >= vocab):
+        return scaled
+    sorted_logits, indices = scaled.sort(dim=-1, descending=True, stable=True)
+    remove = torch.zeros_like(sorted_logits, dtype=torch.bool)
+    if top_p < 1.0:
+        probs = sorted_logits.softmax(dim=-1)
+        remove = probs.cumsum(dim=-1) - probs > top_p
+    if 0 < top_k < vocab:
+        remove = remove | (torch.arange(vocab, device=logits.device) >= top_k)
+    return scaled.masked_fill(remove.scatter(-1, indices, remove), float("-inf"))
+
+
 @torch.compile(dynamic=None)
-def compiled_l1_from_logits(logits: torch.Tensor, target_logits: torch.Tensor) -> torch.Tensor:
-    """Per-token L1 distance between FP32 softmax distributions."""
-    draft_probs = torch.softmax(logits.float(), dim=-1)
-    target_probs = torch.softmax(target_logits.float(), dim=-1)
+def compiled_l1_from_logits(logits: torch.Tensor, target_logits: torch.Tensor,
+                            target_sampling=(1.0, 1.0, -1),
+                            draft_sampling=(1.0, 1.0, -1)) -> torch.Tensor:
+    """Per-token L1 distance between optional sampling-transformed FP32 distributions."""
+    draft_probs = torch.softmax(sampling_logits(logits, draft_sampling).float(), dim=-1)
+    target_probs = torch.softmax(sampling_logits(target_logits, target_sampling).float(), dim=-1)
     return (draft_probs - target_probs).abs().sum(dim=-1)
 
 

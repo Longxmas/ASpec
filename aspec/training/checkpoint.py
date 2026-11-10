@@ -80,6 +80,10 @@ def _logical_training_topology(args: Any, world_size: int) -> dict[str, Any]:
                   "ce_loss_alpha", "l1_loss_alpha")
         if prefix == "dspark":
             fields += ("confidence_head_alpha",)
+            for side in ("target", "draft"):
+                for name, default in (("temperature", 1.0), ("top_p", 1.0), ("top_k", -1)):
+                    key = f"l1_{side}_{name}"
+                    topology["training_objective"][key] = getattr(args, f"dspark_{key}", default)
         else:
             fields += ("loss_objective", "dpace_alpha")
         for name in fields:
@@ -140,6 +144,13 @@ def _validate_exact_resume_topology(args: Any, metadata: dict[str, Any], *, chec
     if saved_topology is not None and not isinstance(saved_topology, dict):
         raise RuntimeError("Exact resume checkpoint has invalid training_topology metadata")
     current_topology = _logical_training_topology(args, current_world_size)
+    if getattr(args, "draft_algorithm", None) == "dspark":
+        saved_objective = (saved_topology or {}).get("training_objective") or {}
+        for side in ("target", "draft"):
+            for name, default in (("temperature", 1.0), ("top_p", 1.0), ("top_k", -1)):
+                key = f"l1_{side}_{name}"
+                if saved_objective.get(key, default) != getattr(args, f"dspark_{key}", default):
+                    raise RuntimeError(f"Exact resume cannot change dspark_{key}; use weights-only initialization")
     # Checkpoints predating this option always sampled per physical row.
     # Missing semantic identity must not authorize a switch to per-sample training.
     if (getattr(args, "draft_algorithm", None) in {"dspark", "dflash", "dflash2"}
