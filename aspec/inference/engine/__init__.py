@@ -19,10 +19,16 @@
 # SOFTWARE.
 
 
-from aspec.inference.engine.base import InferenceEngine
-from aspec.inference.engine.sgl_engine import SglEngine
+# ASpec: defer backend imports so Draft never imports the Target dependency graph.
+from importlib import import_module
 
-__all__ = [
-    "InferenceEngine",
-    "SglEngine",
-]
+__all__ = ["InferenceEngine", "SglEngine"]
+
+
+def __getattr__(name):
+    modules = {"InferenceEngine": "base", "SglEngine": "sgl_engine"}
+    if name not in modules:
+        raise AttributeError(name)
+    value = getattr(import_module("aspec.inference.engine." + modules[name]), name)
+    globals()[name] = value
+    return value

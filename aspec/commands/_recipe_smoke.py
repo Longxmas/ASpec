@@ -19,7 +19,6 @@ import json
 import os
 import secrets
 import sys
-import uuid
 from pathlib import Path
 
 import ray
@@ -201,14 +200,13 @@ def main(*, trainer_class=AuditedTrainerActor):
     sys.argv = [sys.argv[0], "--config", args.config, *overrides, f"output_dir={root}"]
     (root / "recipe-command.json").write_text(json.dumps({
         "diagnostic_only": True, "argv": sys.argv, "python": sys.executable,
+        "total_gpu_budget": args.gpus,
         "visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
     }, indent=2))
-    if args.cluster_address:
-        ray.init(address=args.cluster_address)
-    else:
-        ray.init(address="local", num_cpus=16, num_gpus=args.gpus, include_dashboard=False,
-                 object_store_memory=1024 ** 3, _temp_dir=f"/tmp/aspec-recipe-{uuid.uuid4().hex[:10]}")
     try:
+        # Use the normal launcher, including managed-local's visibility split,
+        # before initializing Draft's Ray runtime. The audit budget spans both
+        # roles; it is never a request for that many GPUs in Draft's Ray head.
         train_entry.main()
     finally:
         RayTrainGroup.save_model = original_save

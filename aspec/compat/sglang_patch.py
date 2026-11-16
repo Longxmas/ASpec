@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Apply/check the pinned training patch in the active, isolated SGLang wheel."""
+"""Apply/check the training patch in the active Target environment."""
 
 import argparse
 import importlib.metadata
@@ -104,7 +104,9 @@ def main():
             print(f"Applied ASpec training patch to {site / 'sglang'}")
         else:
             print(f"ASpec training patch already present: {site / 'sglang'}")
-    except (RuntimeError, OSError, importlib.metadata.PackageNotFoundError, subprocess.CalledProcessError) as exc:
+    except importlib.metadata.PackageNotFoundError:
+        parser.exit(1, "Activate the Target venv and install ling-aspec-target before patching SGLang\n")
+    except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f"ASpec patch check failed: {exc}\n")
 
 

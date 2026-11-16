@@ -1,5 +1,5 @@
 # CPU-only public CI dependencies. The production CUDA lane remains pinned in
-# requirements/sglang-v0.5.21.txt; this smaller set exercises planning, data,
+# requirements/draft.txt and requirements/sglang-v0.5.21.txt; this smaller set exercises planning, data,
 # controller and configuration contracts without installing SGLang/CUDA wheels.
 datasets>=5.0.1,<6
 numba

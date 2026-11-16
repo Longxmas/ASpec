@@ -2169,3 +2169,71 @@ def test_profile_sink_stops_dispatch_when_budget_expires_between_sinks(monkeypat
     actors[0].discard_inference_outputs.remote.assert_called_once()
     actors[1].discard_inference_outputs.remote.assert_not_called()
     get.assert_not_called()
+
+
+@pytest.mark.parametrize("engine_type", ["sgl", "hf"])
+@pytest.mark.parametrize("fence_fails", [False, True])
+@pytest.mark.parametrize("resident_outputs", [0, 1])
+def test_forced_target_cleanup_uses_source_termination_only_after_reader_fence(
+    monkeypatch, engine_type, fence_fails, resident_outputs,
+):
+    trainer, source, controller = mock.MagicMock(), mock.MagicMock(), mock.MagicMock()
+    group = SimpleNamespace(_actor_handlers=[trainer], _owner_statuses=[{"pid": 1}])
+    controller.finalize_uncommitted_work.remote.return_value = {"discarded": 0}
+    controller.get_work_lifecycle_status.remote.return_value = {
+        "resident_outputs": resident_outputs, "resident_bytes": 8 * resident_outputs,
+    }
+    controller.finalize_fenced_work.remote.return_value = {
+        "discarded": 1, "lifecycle": {"state": "validated", "resident_outputs": 0, "resident_bytes": 0},
+    }
+    events = []
+
+    def fence(*_args, **_kwargs):
+        events.append("reader_fence")
+        if fence_fails:
+            raise TimeoutError("reader alive")
+        return {"state": "verified"}
+
+    source.shutdown.remote.side_effect = lambda **kwargs: events.append(("shutdown", kwargs))
+    monkeypatch.setattr(loop, "wait_for_owner_exit", fence)
+    monkeypatch.setattr(loop.ray, "get", lambda ref, **_kwargs: ref)
+    monkeypatch.setattr(loop.ray, "kill", mock.Mock())
+    result = loop._safe_training_cleanup(
+        SimpleNamespace(inference_engine_type=engine_type, target_service={"mode": "external"}),
+        None, None, [source], controller, group, force_kill_trainers=True,
+    )
+    if engine_type == "hf" and not resident_outputs:
+        assert not events and result["state"] == "completed"
+    elif fence_fails:
+        source.shutdown.remote.assert_not_called()
+        assert result["source_teardown"] == "blocked"
+    elif engine_type == "sgl":
+        assert events == ["reader_fence", ("shutdown", {"force": True})]
+        assert result["state"] == "completed"
+    else:
+        source.shutdown.remote.assert_not_called()
+        assert result["state"] == "completed"
+
+
+def test_lost_source_domain_is_recorded_without_claiming_source_process_exit(monkeypatch):
+    trainer, source, controller = mock.MagicMock(), mock.MagicMock(), mock.MagicMock()
+    group = SimpleNamespace(_actor_handlers=[trainer], _owner_statuses=[{"pid": 1}])
+    controller.finalize_uncommitted_work.remote.return_value = {"discarded": 0}
+    controller.get_work_lifecycle_status.remote.return_value = {"resident_outputs": 1, "resident_bytes": 8}
+    controller.finalize_fenced_work.remote.return_value = {
+        "discarded": 1, "lifecycle": {"state": "validated", "resident_outputs": 0, "resident_bytes": 0},
+    }
+    source.shutdown.remote.return_value = {
+        "state": "node_local_domain_lost", "node_id": "lost-node", "physical_memory_unobserved": True,
+    }
+    monkeypatch.setattr(loop, "wait_for_owner_exit", lambda *_args, **_kwargs: {"state": "verified"})
+    monkeypatch.setattr(loop.ray, "get", lambda ref, **_kwargs: ref)
+    monkeypatch.setattr(loop.ray, "kill", mock.Mock())
+    result = loop._safe_training_cleanup(
+        SimpleNamespace(inference_engine_type="sgl", target_service={"mode": "external"}),
+        None, None, [source], controller, group, force_kill_trainers=True,
+    )
+    assert result["state"] == "completed"
+    operation = next(x for x in result["operations"] if x["component"] == "inference_engine")
+    assert operation == {"component": "inference_engine", "state": "node_local_domain_lost",
+                         "node_id": "lost-node", "physical_memory_unobserved": True}

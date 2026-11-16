@@ -123,17 +123,21 @@ def test_ray_queue_payload_import_works_in_a_fresh_worker():
     assert result.returncode == 0, result.stderr
 
 @pytest.mark.parametrize("model", MODELS)
-def test_quickstart_rejects_unallocated_gpus_without_a_traceback(model, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("managed,expected_gpus", [(False, 1), (True, 2)])
+def test_quickstart_rejects_unallocated_gpus_without_a_traceback(model, managed, expected_gpus, tmp_path, monkeypatch, capsys):
     from tools import quickstart
 
     output = tmp_path / "run"
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-    monkeypatch.setattr(sys, "argv", ["quickstart", model, "--output", str(output)])
+    command = ["quickstart", model, "--output", str(output)]
+    if managed:
+        command += ["--managed-target", "/target/bin/python"]
+    monkeypatch.setattr(sys, "argv", command)
     with pytest.raises(SystemExit) as error:
         quickstart.main()
     assert error.value.code == 1
     message = capsys.readouterr().err
-    assert "Select exactly 2" in message
+    assert f"Select exactly {expected_gpus} " in message
     assert "Traceback" not in message
     assert not output.exists()
 

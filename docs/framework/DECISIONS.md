@@ -5,16 +5,33 @@ These decisions describe the maintained implementation and its public behavior.
 - **Product scope.** SGLang with DSpark/DFlash and Qwen3 is the primary multi-GPU performance path.
   Other implemented algorithms and structures have explicit [support boundaries](../support.md).
   A source release does not promise all combinations or production fault certification.
-- **Naming and licensing.** Project, Python namespace and CLI use ASpec / `aspec`.
-  ASpec uses Apache-2.0; inherited material retains its own licenses and notices. Source release
-  does not establish a PyPI distribution or promise name coexistence with unrelated packages.
+- **Naming and licensing.** The project uses ASpec; the Python namespace and CLI use `aspec`.
+  The distribution name on PyPI is `ling-aspec`; the unrelated `aspec` distribution must not be
+  installed alongside it because their import namespaces can overlap. ASpec uses Apache-2.0;
+  inherited material retains its own licenses and notices. PyPI publication requires the
+  [release checks and publishing configuration](../releasing.md).
+- **Release versions.** Maintainers choose the major/minor/patch version and currently retain
+  the `b0` beta suffix for public releases.
+  CI validates the matching `v<version>` tag without incrementing or promoting the version.
+  See [versioning](../releasing.md#versioning).
 - **Reuse.** Review the pinned upstream implementation before adding overlapping functionality.
   Adapt working code by default; explain a rewrite and verify it against the original behavior.
   Preserve transitive provenance. See [retention boundaries](RETENTION_BOUNDARY.md).
 - **Runtime baseline.** Use the [pinned installation lane](../user-guide/installation.md): official
   SGLang v0.5.21, commit `e00930c5489053f26d86b179cee0d087f846acbb`, with the retained training
-  patch. FA4 b34, CUTLASS DSL 4.7.1 and Quack 0.6.5 share a compatible dependency lane. Upstream
+  patch in Target. Draft uses FA4 b34, CUTLASS DSL 4.7.1 and Quack 0.6.5 independently. Upstream
   migration references do not constrain ASpec to their older runtime versions.
+- **Installation.** `ling-aspec` and `ling-aspec-target` install separate Draft/Target dependency
+  environments, sharing one version of `ling-aspec-runtime`. Target follows upstream SGLang pins;
+  no metadata overrides are accepted. `aspec patch-sglang` only patches files. `aspec target` and
+  `aspec train` start in their own environments and connect through a versioned JSON control
+  protocol; feature tensors retain Mooncake transport. Target's private Ray runtime orchestrates
+  its source processes and leases its own CUDA-visible GPUs; Draft's Ray reserves only training GPUs.
+  Compatibility requires the same release and control protocol; source hashes and Python versions
+  are Evidence rather than handshake gates. Optional single-node
+  managed-local supervision starts the same service, with an explicit Target interpreter only for
+  that supervisor. Both forms retain exact resume. This boundary is inspired by SpecForge
+  f8cc3dc external/managed-local capture; its newer SGLang plugin is not copied.
 - **Semantics and execution.** Workload, capability, Plan and observed Evidence are distinct.
   Required capability failures are errors; fallback/omission is explicit. No legacy fields leak
   across the canonical boundary. [Architecture](ARCHITECTURE.md) defines the work/ownership invariants.

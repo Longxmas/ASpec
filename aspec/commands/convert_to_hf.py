@@ -100,7 +100,7 @@ def _sha256_file(path: Path) -> str:
 
 def _aspec_version() -> str:
     try:
-        return importlib.metadata.version("aspec")
+        return importlib.metadata.version("ling-aspec-runtime")
     except importlib.metadata.PackageNotFoundError:
         return "unknown"
 

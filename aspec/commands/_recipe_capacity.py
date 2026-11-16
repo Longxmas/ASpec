@@ -22,6 +22,30 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 
+def memory_gpu_ids(config, entry):
+    """Observe the complete single-node allocation across both environments."""
+    from aspec.inference.service_protocol import request
+    from aspec.utils.misc import get_current_node_ip, visible_gpu_ids
+
+    draft = visible_gpu_ids()
+    service = OmegaConf.select(config, "inference.target_service", default={})
+    if service.get("mode", "external") == "managed-local":
+        return draft  # The supervisor has not split the combined visibility yet.
+    node_ip = get_current_node_ip()
+    address = (service.get("addresses") or {}).get(
+        node_ip, service.get("address", "http://127.0.0.1:30000"),
+    )
+    info = request(address, "/v1/info", timeout=30)
+    if info["node_ip"] != node_ip:
+        raise ValueError("Single-node capacity acceptance requires Target on the Draft host")
+    if info["draining"] or any(item["state"] != "closed" for item in info["engines"].values()):
+        raise ValueError("Capacity acceptance requires an idle Target GPU pool")
+    target = [gpu for gpu in info["devices"] if gpu not in draft]
+    if len(target) != entry["target_gpus"]:
+        raise ValueError("Select the recipe's allocated Target GPUs before capacity acceptance")
+    return draft + target
+
+
 def audit_long_run(directory):
     config = OmegaConf.load(Path(directory) / "config.yaml")
     backend = OmegaConf.select(config, "training.attention_backend")

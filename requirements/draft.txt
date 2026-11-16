@@ -1,0 +1,12 @@
+# Draft-only CUDA 13 training dependencies. SGLang owns the Target environment.
+torch==2.13.0
+torchvision==0.28.0
+transformers==5.12.1
+apache-tvm-ffi==0.1.11
+flash-attn-4==4.0.0b34
+nvidia-cutlass-dsl[cu13]==4.7.1
+quack-kernels[cu13]==0.6.5
+nvidia-cudnn-frontend==1.31.0
+cmake
+ninja
+numba

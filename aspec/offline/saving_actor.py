@@ -58,10 +58,13 @@ class OfflineSavingActor:
         self.queues = {}
 
     def get_owner_status(self):
+        import psutil
+
         return {
             "node_id": ray.get_runtime_context().get_node_id(),
             "node_ip": RayActor.get_node_ip(),
             "pid": os.getpid(),
+            "created": psutil.Process().create_time(),
         }
 
     def set_queues(self, train_queue, eval_queue) -> None:

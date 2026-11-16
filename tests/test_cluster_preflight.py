@@ -123,6 +123,23 @@ def test_static_cluster_inventory_accepts_homogeneous_shared_nodes():
     _validate([_inventory("10.0.0.1"), _inventory("10.0.0.2")])
 
 
+def test_separate_runtime_roles_do_not_require_sglang_on_draft_nodes():
+    draft, target = _inventory("10.0.0.1"), _inventory("10.0.0.2")
+    draft["roles"], target["roles"] = ["draft"], ["target"]
+    draft["runtime_artifacts"]["sglang"] = {"path": None}
+    draft["packages"].update({"sglang": None, "nvidia-cutlass-dsl": "4.7.1"})
+    target["packages"].update({"sglang": "0.5.21", "nvidia-cutlass-dsl": "4.6.2"})
+    target["target_runtime"] = {"version": "0.1.0b0", "code_sha256": "same"}
+    _validate([draft, target])
+
+
+def test_split_target_node_cannot_omit_its_environment_observation():
+    draft, target = _inventory("10.0.0.1"), _inventory("10.0.0.2")
+    draft["roles"], target["roles"] = ["draft"], ["target"]
+    with pytest.raises(ClusterPreflightError, match="isolated runtime"):
+        _validate([draft, target])
+
+
 def test_locality_domain_geometry_resolves_live_node_identity():
     args = SimpleNamespace(
         training_node_ips=["10.0.0.1", "10.0.0.2"],

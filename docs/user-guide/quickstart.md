@@ -7,10 +7,24 @@ Draft or establish quality/performance.
 
 ## 1. Install and choose a model
 
-Use [source setup or a release wheel](installation.md). For source setup, from the repository root:
+Install the separate Draft and Target environments using the [installation guide](installation.md).
+For source setup, from the repository root:
 
 ```bash
 bash setup.sh
+bash setup.sh --target
+```
+
+In a Target terminal, start the service on one allocated GPU:
+
+```bash
+source .venv-target/bin/activate
+CUDA_VISIBLE_DEVICES=0 aspec target
+```
+
+In a Draft terminal:
+
+```bash
 source .venv/bin/activate
 ```
 
@@ -35,12 +49,12 @@ configured direct-prefill path. Changing a model path is not an architecture sub
 
 ## 3. Run either profile
 
-Select only the two GPUs allocated to your task. Each command needs a new output directory:
+With Target on GPU 0, select GPU 1 for Draft. Each command needs a new output directory:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 aspec quickstart ling-tiny --output outputs/ling-tiny-001
+CUDA_VISIBLE_DEVICES=1 aspec quickstart ling-tiny --output outputs/ling-tiny-001
 # Or:
-CUDA_VISIBLE_DEVICES=0,1 aspec quickstart qwen3-8b --output outputs/qwen3-8b-001
+CUDA_VISIBLE_DEVICES=1 aspec quickstart qwen3-8b --output outputs/qwen3-8b-001
 ```
 
 The command performs GPU doctor, Plan inspection, four training steps with an eight-step LR horizon,

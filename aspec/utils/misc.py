@@ -78,6 +78,19 @@ def get_free_port(start_port=10000, consecutive=1):
     raise RuntimeError(f"no available TCP port range starting at or above {start_port}")
 
 
+def visible_gpu_ids() -> list[int]:
+    """Physical IDs in CUDA order, shared by independent role launchers."""
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is None:
+        import torch
+
+        return list(range(torch.cuda.device_count()))
+    ids = [int(value) for value in visible.split(",") if value.strip()]
+    if any(value < 0 for value in ids) or len(ids) != len(set(ids)):
+        raise ValueError("CUDA_VISIBLE_DEVICES must contain distinct nonnegative GPU IDs")
+    return ids
+
+
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
     if not cvd:

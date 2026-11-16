@@ -6,6 +6,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 WORKDIR /opt/ASpec
 COPY . .
 RUN bash setup.sh --venv /opt/aspec-venv --python /usr/bin/python3.12
+RUN bash setup.sh --target --venv /opt/aspec-target --python /usr/bin/python3.12
 ENV VIRTUAL_ENV=/opt/aspec-venv
 ENV PATH="/opt/aspec-venv/bin:${PATH}"
 CMD ["bash"]

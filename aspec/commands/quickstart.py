@@ -54,10 +54,22 @@ def main():
     parser.add_argument("model", choices=MODELS)
     parser.add_argument("--target", help="Optional compatible local Target directory or Hub ID")
     parser.add_argument("--output", required=True, type=Path, help="Fresh run directory")
+    parser.add_argument("--target-address", help="Address of an already running Target service")
+    parser.add_argument("--managed-target", help="Optionally start local Target using this absolute Python path")
+    parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--plan", action="store_true", help="Inspect CPU Plan only; no GPU services")
     args = parser.parse_args()
     config = build_profile(args.model, args.target)
+    if args.target_address:
+        config.inference.target_service = {"address": args.target_address}
+    if args.managed_target:
+        config.inference.target_service = OmegaConf.merge(
+            config.inference.get("target_service", {}),
+            {"mode": "managed-local", "python_executable": args.managed_target},
+        )
+    if args.set:
+        config = OmegaConf.merge(config, OmegaConf.from_dotlist(args.set))
     output = args.output.resolve()
     if args.plan:
         with tempfile.TemporaryDirectory(prefix="aspec-plan-") as folder:

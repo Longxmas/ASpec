@@ -12,7 +12,7 @@ fi
 : "${ASPEC_TARGET_MODEL:?Set an absolute local Qwen3-8B checkpoint path}"
 : "${ASPEC_TRAIN_DATA:?Set an absolute training data path}"
 : "${ASPEC_EVAL_DATA:?Set an absolute disjoint evaluation data path}"
-: "${CUDA_VISIBLE_DEVICES:?Select two allocated GPUs explicitly}"
+: "${CUDA_VISIBLE_DEVICES:?Select the allocated Draft GPU explicitly}"
 
 # Resolve the output before changing directory so paths are relative to the caller.
 output_root=$(python -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve())' "$1")

@@ -9,6 +9,7 @@ import os
 # use its own node-local default (/tmp/torchinductor_$USER/) to avoid
 # cross-node triton kernel cache corruption over NFS.
 _ASPEC_ENV_KEYS = [
+    "ASPEC_CUDA_COMPAT_DIR",
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
     "OPENBLAS_NUM_THREADS",
@@ -83,7 +84,7 @@ def get_aspec_env_vars(args=None) -> dict[str, str]:
     if getattr(args, "cluster_mode", "single_node") == "static_multi_node":
         # Ray is started from each node's own venv/environment. A driver's
         # library/cache paths must not overwrite another node's local layout.
-        for key in ("LD_LIBRARY_PATH", "PYTHONPATH", "HF_HOME", "CUTE_DSL_CACHE_DIR",
+        for key in ("LD_LIBRARY_PATH", "PYTHONPATH", "HF_HOME", "ASPEC_CUDA_COMPAT_DIR", "CUTE_DSL_CACHE_DIR",
                     "FLASH_ATTENTION_CUTE_DSL_CACHE_DIR", "ASPEC_LOG_DIR"):
             env.pop(key, None)
     return env

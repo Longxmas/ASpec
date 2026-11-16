@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 
 import ray
@@ -165,6 +166,8 @@ def materialize(args, output_dir: str) -> dict[str, int]:
     if args.draft_context_parallel_size != 1 or args.dflash_packing:
         raise ValueError("Materialization requires CP1 and dflash_packing=false")
     args.num_epochs = 1
+    args.aspec_run_id = f"uuid:{uuid.uuid4()}"
+    args.aspec_attempt_id = f"uuid:{uuid.uuid4()}"
     # Materialize the complete admitted source once, independently of the
     # optimizer-step and producer-profiling budgets in a reused training YAML.
     args.num_train_steps = None
@@ -209,10 +212,10 @@ def materialize(args, output_dir: str) -> dict[str, int]:
         inference_pg = create_placement_groups(args, roles={"inference"})["inference"]
         launch_mooncake_master(args)
         mooncake_config = build_mooncake_config(args)
-        engines = create_inference_engines(args, inference_pg, mooncake_config)
-
         saver = OfflineSavingActor.remote(output_dir, mooncake_config, controller)
         saver_owner = get(saver.get_owner_status.remote())
+        args.aspec_read_owners = [saver_owner]
+        engines = create_inference_engines(args, inference_pg, mooncake_config)
         train_queues, eval_queues = get(
             [controller.get_train_queues.remote(), controller.get_eval_queues.remote()]
         )

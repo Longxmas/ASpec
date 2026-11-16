@@ -11,11 +11,14 @@ with NVLink, using FA4 packing at CP1. Supply disjoint train/eval inputs prepare
 for Qwen3-8B, with sequences up to 4K and at least 32 supervised tokens per usable
 sample. See [data preparation](../../docs/user-guide/data.md).
 
+In the Target environment, keep `CUDA_VISIBLE_DEVICES=0 aspec target` running.
+Run the following commands in Draft's environment on GPU 1:
+
 ```bash
 export ASPEC_TARGET_MODEL=/path/to/Qwen3-8B
 export ASPEC_TRAIN_DATA=/path/to/train.parquet
 export ASPEC_EVAL_DATA=/path/to/eval.parquet
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=1
 export RAY_ADDRESS=local
 
 bash examples/qwen3-8b-dsa/run.sh outputs/dsa-workflow

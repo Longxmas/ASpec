@@ -14,6 +14,9 @@ one NVLink node: four Target GPUs and two GPUs for each Draft. It uses CP1, MBS1
 four accumulation steps and no packing, giving eight documents per optimizer
 update per Draft.
 
+In the Target environment, keep `CUDA_VISIBLE_DEVICES=4,5,6,7 aspec target` running.
+The commands below run in Draft's environment on GPUs 0–3.
+
 Provide a local Qwen3-8B checkpoint and disjoint train/eval conversation files
 following the [data format guide](../../docs/user-guide/data.md). Samples must fit
 4K context and contain at least 32 supervised tokens. For a first run, a small
@@ -24,7 +27,7 @@ export ASPEC_TARGET_MODEL=/path/to/Qwen3-8B
 export ASPEC_TRAIN_DATA=/path/to/train.jsonl
 export ASPEC_EVAL_DATA=/path/to/eval.jsonl
 export ASPEC_SHARED_OUTPUT=outputs/qwen3-shared-compare
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 export RAY_ADDRESS=local
 ```
 

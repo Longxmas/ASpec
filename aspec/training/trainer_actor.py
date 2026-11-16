@@ -178,6 +178,13 @@ class TrainerActor(RayActor):
 
     def get_status(self) -> dict:
         """Return the rank placement actually selected by Ray and CUDA."""
+        import sys
+
+        import psutil
+        import torch
+
+        import aspec
+        from aspec.inference.target_runtime import code_identity, dependency_versions
 
         return {
             "rank": self._rank,
@@ -185,9 +192,14 @@ class TrainerActor(RayActor):
             "node_ip": self.get_node_ip(),
             "node_id": ray.get_runtime_context().get_node_id(),
             "pid": os.getpid(),
+            "created": psutil.Process().create_time(),
             "assigned_gpu_ids": [int(float(value)) for value in ray.get_gpu_ids()],
             "local_gpu_id": int(os.environ["LOCAL_RANK"]),
             "initialized": hasattr(self, "_trainer"),
+            "runtime": {**code_identity(), "python": sys.executable, "prefix": sys.prefix,
+                        "aspec": aspec.__file__, "ray": ray.__file__,
+                        "torch": torch.__version__, "cuda": torch.version.cuda,
+                        "dependencies": dependency_versions("nvidia-cutlass-dsl", "quack-kernels")},
         }
 
     def save_model(self, step: int, force_sync: bool = False) -> None:

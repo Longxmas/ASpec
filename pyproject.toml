@@ -3,38 +3,27 @@ requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aspec"
-version = "0.1.0rc1"
+name = "ling-aspec-runtime"
+version = "0.1.0b0"
 description = "A Torch-native framework for speculative decoding training"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "licenses/*"]
 requires-python = ">=3.11"
 dependencies = [
-    "accelerate",
-    "cmake",
-    "datasets>=5.0.1,<6",
-    "mooncake-transfer-engine>=0.3.10.post1",
-    "ninja",
-    "numba",
-    "numpy<2.4",
-    "omegaconf",
-    "openai",
-    "openai-harmony",
-    "packaging",
-    "psutil",
-    "pydantic",
-    "pyzmq",
-    "qwen-vl-utils",
-    "ray",
-    "setuptools",
-    "tqdm",
-    "transformers",
-    "wandb>=0.19.10",
+    "accelerate", "datasets>=5.0.1,<6", "numpy<2.4", "omegaconf", "openai",
+    "openai-harmony", "packaging", "psutil", "pydantic", "pyzmq", "qwen-vl-utils",
+    "ray==2.59.0", "setuptools", "tqdm", "transformers", "wandb>=0.19.10",
+    "mooncake-transfer-engine==0.3.13.post1", "nvidia-cuda-runtime-cu12==12.9.79",
 ]
 
 [project.scripts]
 aspec = "aspec.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/inclusionAI/ASpec"
+Documentation = "https://github.com/inclusionAI/ASpec/blob/main/docs/README.md"
+Issues = "https://github.com/inclusionAI/ASpec/issues"
 
 [project.optional-dependencies]
 dev = ["build", "pre-commit", "pytest", "ruff", "tensorboard"]

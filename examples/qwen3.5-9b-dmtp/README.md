@@ -11,6 +11,10 @@ Activate the [isolated Linux environment](../../docs/user-guide/installation.md)
 Set disjoint training/evaluation inputs using the [supported data formats](../../docs/user-guide/data.md):
 
 ```bash
+# In the Target environment:
+CUDA_VISIBLE_DEVICES=4,5,6,7 aspec target
+# In the Draft environment:
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 export ASPEC_TARGET_MODEL=/path/to/Qwen3.5-9B
 export ASPEC_TRAIN_DATA=/path/to/train.parquet
 export ASPEC_EVAL_DATA=/path/to/heldout.parquet

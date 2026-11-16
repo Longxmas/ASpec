@@ -1,23 +1,7 @@
-# Official v0.5.21 CUDA 13 dependency lane with the ASpec-validated
-# CUTLASS DSL 4.7.1 / Quack 0.6.5 compatibility override.
+# Target-only environment: retain SGLang's declared dependency versions.
 sglang==0.5.21
-torch==2.13.0
-transformers==5.12.1
-sglang-kernel==0.4.7
-flashinfer-python[cu13]==0.6.18
-apache-tvm-ffi==0.1.11
 flash-attn-4==4.0.0b34
-nvidia-cutlass-dsl[cu13]==4.7.1
-quack-kernels[cu13]==0.6.5
-# Frontend 1.32 requires CUTLASS >=4.8; keep the validated 4.7.1 lane.
-nvidia-cudnn-frontend==1.31.0
+cuda-toolkit[nvcc]==13.0.3.0
+# Mooncake's native wheel needs libcudart.so.12 alongside Torch's CUDA 13.
 mooncake-transfer-engine==0.3.13.post1
-ray==2.59.0
-# The retained Mooncake wheel links libcudart.so.12, independently of Torch CUDA 13.
 nvidia-cuda-runtime-cu12==12.9.79
-
-# Explicit prerelease required by the official SGLang runtime.
-cuda-tile==1.6.0rc5
-
-# Match the Torch 2.13 runtime used by this lane.
-torchvision==0.28.0

@@ -436,6 +436,8 @@ def _safe_training_cleanup(
     feature_contract_error = None
     read_owner_fence = closed_reader_fence if train_group is None else None
     source_teardown_safe = True
+    external_target = (getattr(args, "inference_engine_type", None) == "sgl"
+                       and bool(getattr(args, "target_service", None)))
 
     def record(component: str, state: str, error: Exception | None = None) -> None:
         item = {"component": component, "state": state}
@@ -597,7 +599,7 @@ def _safe_training_cleanup(
     if (
         force_kill_trainers
         and read_owner_fence is None
-        and (trainer_close_failed or not ownership_empty)
+        and (trainer_close_failed or not ownership_empty or external_target)
     ):
         try:
             read_owner_fence = wait_for_owner_exit(
@@ -615,8 +617,19 @@ def _safe_training_cleanup(
     if inference_engines and force_kill_trainers and source_teardown_safe:
         for engine in inference_engines:
             try:
+                source_state = None
+                if external_target:
+                    # The facade is Draft-owned; the actual source is owned by
+                    # Target. After fencing readers, terminate its source process
+                    # tree rather than waiting for an interrupted native drain.
+                    source_state = ray.get(engine.shutdown.remote(force=True), timeout=float(
+                        getattr(args, "inference_shutdown_timeout_seconds", 120)))
                 ray.kill(engine, no_restart=True)
-                record("inference_engine", "force_killed")
+                if isinstance(source_state, Mapping) and source_state.get("state") == "node_local_domain_lost":
+                    record("inference_engine", "node_local_domain_lost")
+                    operations[-1].update(node_id=source_state["node_id"], physical_memory_unobserved=True)
+                else:
+                    record("inference_engine", "force_killed")
             except Exception as exc:
                 logger.warning(f"Failed to terminate inference engine actor: {exc}")
                 record("inference_engine", "kill_failed", exc)

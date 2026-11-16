@@ -1626,11 +1626,13 @@ def _policy(
                 ),
             },
             "training": {
+                "gpu_owner": "draft_ray",
                 "nodes": _select(config, "training.training_num_nodes"),
                 "gpus_per_node": _select(config, "training.training_num_gpus_per_node"),
                 "world_size": runtime["world_size"],
             },
             "inference": {
+                "gpu_owner": "target_service" if runtime["inference_engine_type"] == "sgl" else None,
                 "nodes": (
                     len(_select(config, "inference.inference_node_ips") or ())
                     if cluster_mode == "static_multi_node"
@@ -1644,6 +1646,7 @@ def _policy(
                 "engines": (runtime["offline_num_engines"] if runtime["inference_engine_type"] == "offline"
                             else runtime["inference_num_gpus"] // runtime["inference_num_gpus_per_engine"]),
                 "target_group_locality": "node_local",
+                "target_service": _select(config, "inference.target_service"),
             },
             "locality_domains": locality_domains,
         },

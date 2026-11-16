@@ -41,6 +41,7 @@ from omegaconf import OmegaConf
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from aspec import AutoDraftModelConfig
+from aspec._environment import require_draft_environment
 from aspec.config.train_config import _save_config_snapshot, load_config
 from aspec.config.utils import generate_draft_model_config
 from aspec.controller import (
@@ -51,7 +52,7 @@ from aspec.controller import (
     setup_async_training_with_engines,
 )
 from aspec.evidence import RunEvidenceRecorder
-from aspec.inference.factory import prepare_inference_engines
+from aspec.inference.factory import prepare_inference_engines, rollback_unused_targets
 from aspec.planning import ExecutionPlan, compile_execution_plan, save_execution_plan
 from aspec.ray.cluster_preflight import run_cluster_preflight
 from aspec.ray.owner_fence import SourceTeardownBlockedError, run_with_source_fencing
@@ -206,6 +207,9 @@ def _prepare_config() -> tuple[argparse.Namespace, ExecutionPlan]:
         parser.error("--report-format requires --report")
     if args.preflight_only and (args.dry_run or args.print_config_only):
         parser.error("--preflight-only cannot be combined with --dry-run or --print-config-only")
+
+    if not (args.dry_run or args.print_config_only):
+        require_draft_environment()
 
     config = load_config(
         config_path=args.config,
@@ -411,6 +415,9 @@ def train_async_no_generation(args, evidence: RunEvidenceRecorder | None = None)
             pg=pgs["training"],
             training_class=TrainerActor,
         )
+        args.aspec_read_owners = ray.get([
+            actor.get_owner_identity.remote() for actor in train_group._actor_handlers
+        ])
         train_init_refs = train_group.async_init(
             args, role="training", mooncake_config=mooncake_config, with_ref=False
         )
@@ -425,60 +432,66 @@ def train_async_no_generation(args, evidence: RunEvidenceRecorder | None = None)
             args, pgs.get("inference"), mooncake_config
         )
 
-    # [8] Wait for all actor init to complete concurrently
-    n_train = len(train_init_refs)
-    logger.info(
-        f"Waiting for {n_train} training actors and {len(engine_init_refs)} "
-        f"inference engines to initialize in parallel..."
-    )
-    backend_name = {"sgl": "sglang"}.get(args.inference_engine_type, args.inference_engine_type)
-    init_timeout = float(getattr(args, f"{backend_name}_init_timeout", 1200))
-    all_results = timer.wait(
-        "Actor initialization", train_init_refs + engine_init_refs, timeout=init_timeout
-    )
-
-    train_results = all_results[:n_train]
-    if len(set(train_results)) != 1:
-        raise RuntimeError(
-            "Training actors returned inconsistent initialization results: "
-            f"{train_results!r}"
+    try:
+        # [8] Wait for all actor init to complete concurrently
+        n_train = len(train_init_refs)
+        logger.info(
+            f"Waiting for {n_train} training actors and {len(engine_init_refs)} "
+            f"inference engines to initialize in parallel..."
         )
-    logger.info(
-        f"All {n_train} training actors and {len(engine_init_refs)} inference engines initialized"
-    )
-    training_actor_statuses = train_group.get_status()
-    inference_engine_statuses = ray.get(
-        [engine.get_status.remote() for engine in inference_engines]
-    )
-    if evidence is not None:
-        evidence.record_actor_initialization(
-            training_actor_count=n_train,
-            training_actor_statuses=training_actor_statuses,
-            inference_engine_count=len(engine_init_refs),
-            inference_engine_statuses=inference_engine_statuses,
-            dataset_size=dataset_size,
-            eval_dataset_size=eval_dataset_size,
-            dataset_admission=dataset_admission,
-            cluster_resources=ray.cluster_resources(),
-            alive_node_count=sum(node.get("Alive", False) for node in ray.nodes()),
+        backend_name = {"sgl": "sglang"}.get(args.inference_engine_type, args.inference_engine_type)
+        init_timeout = float(getattr(args, f"{backend_name}_init_timeout", 1200))
+        all_results = timer.wait(
+            "Actor initialization", train_init_refs + engine_init_refs, timeout=init_timeout
         )
 
-    if vocab_mapping is not None:
-        train_group.set_vocab_buffers(*vocab_mapping)
-        logger.info("Loaded vocab mapping into training actors")
-
-    # [9] Setup async training with pre-created controller
-    with timer.phase("Setup async training"):
-        controller, inference_manager = setup_async_training_with_engines(
-            args,
-            train_group,
-            mooncake_config,
-            inference_engines,
-            controller=controller,
-            inference_engine_statuses=inference_engine_statuses,
+        train_results = all_results[:n_train]
+        if len(set(train_results)) != 1:
+            raise RuntimeError(
+                "Training actors returned inconsistent initialization results: "
+                f"{train_results!r}"
+            )
+        logger.info(
+            f"All {n_train} training actors and {len(engine_init_refs)} inference engines initialized"
         )
+        training_actor_statuses = train_group.get_status()
+        inference_engine_statuses = ray.get(
+            [engine.get_status.remote() for engine in inference_engines]
+        )
+        if evidence is not None:
+            evidence.record_actor_initialization(
+                training_actor_count=n_train,
+                training_actor_statuses=training_actor_statuses,
+                inference_engine_count=len(engine_init_refs),
+                inference_engine_statuses=inference_engine_statuses,
+                dataset_size=dataset_size,
+                eval_dataset_size=eval_dataset_size,
+                dataset_admission=dataset_admission,
+                cluster_resources=ray.cluster_resources(),
+                alive_node_count=sum(node.get("Alive", False) for node in ray.nodes()),
+            )
 
-    timer.log_summary()
+        if vocab_mapping is not None:
+            train_group.set_vocab_buffers(*vocab_mapping)
+            logger.info("Loaded vocab mapping into training actors")
+
+        # [9] Setup async training with pre-created controller
+        with timer.phase("Setup async training"):
+            controller, inference_manager = setup_async_training_with_engines(
+                args,
+                train_group,
+                mooncake_config,
+                inference_engines,
+                controller=controller,
+                inference_engine_statuses=inference_engine_statuses,
+            )
+
+        timer.log_summary()
+
+    except BaseException:
+        if args.inference_engine_type == "sgl":
+            rollback_unused_targets(inference_engines)
+        raise
 
     # [10] Run training loop (no ray.put needed — dataset lives on controller)
     summary = run_training_loop(
@@ -528,14 +541,23 @@ def main() -> None:
 
 def _main() -> None:
     args, plan = _prepare_config()
+    from aspec.inference.managed import managed_target
+    from aspec.multi_draft import MultiDraftPlan
+
+    draft_gpu_count = (sum(child.to_runtime_args().world_size for child in plan.plans.values())
+                       if isinstance(plan, MultiDraftPlan) else None)
+    with termination_signal_handlers(), managed_target(args, draft_gpu_count=draft_gpu_count):
+        _run_prepared(args, plan)
+
+
+def _run_prepared(args, plan):
     from aspec.multi_draft import MultiDraftPlan, run_multi_draft
 
     if isinstance(plan, MultiDraftPlan):
         try:
-            with termination_signal_handlers():
-                ensure_ray_initialized()
-                install_termination_signal_handler()
-                run_multi_draft(args, plan)
+            ensure_ray_initialized()
+            install_termination_signal_handler()
+            run_multi_draft(args, plan)
         finally:
             if ray.is_initialized():
                 ray.shutdown()
@@ -559,38 +581,37 @@ def _main() -> None:
             attempt_id=attempt_id,
         )
     try:
-        with termination_signal_handlers():
-            # Ray installs its own SIGTERM handler during initialization. Start it
-            # explicitly, then restore ASpec's cancellable handler for the run.
-            ensure_ray_initialized()
-            install_termination_signal_handler()
-            cluster_preflight = run_cluster_preflight(args)
-            if preflight_only:
-                if cluster_preflight is None:
-                    raise RuntimeError(
-                        "--preflight-only requires cluster.mode=static_multi_node"
-                    )
-                output_path = Path(args.output_dir) / "cluster-preflight.json"
-                temporary = output_path.with_name(
-                    f".{output_path.name}.{os.getpid()}.tmp"
+        # Ray installs its own SIGTERM handler during initialization. Start it
+        # explicitly, then restore ASpec's cancellable handler for the run.
+        ensure_ray_initialized()
+        install_termination_signal_handler()
+        cluster_preflight = run_cluster_preflight(args)
+        if preflight_only:
+            if cluster_preflight is None:
+                raise RuntimeError(
+                    "--preflight-only requires cluster.mode=static_multi_node"
                 )
-                temporary.write_text(
-                    json.dumps(
-                        cluster_preflight,
-                        indent=2,
-                        sort_keys=True,
-                        ensure_ascii=False,
-                    )
-                    + "\n",
-                    encoding="utf-8",
+            output_path = Path(args.output_dir) / "cluster-preflight.json"
+            temporary = output_path.with_name(
+                f".{output_path.name}.{os.getpid()}.tmp"
+            )
+            temporary.write_text(
+                json.dumps(
+                    cluster_preflight,
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
                 )
-                os.replace(temporary, output_path)
-                print(json.dumps(cluster_preflight, indent=2, sort_keys=True))
-                ray.shutdown()
-                return
-            if cluster_preflight is not None and evidence is not None:
-                evidence.record_cluster_preflight(cluster_preflight)
-            train_async_no_generation(args, evidence=evidence)
+                + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary, output_path)
+            print(json.dumps(cluster_preflight, indent=2, sort_keys=True))
+            ray.shutdown()
+            return
+        if cluster_preflight is not None and evidence is not None:
+            evidence.record_cluster_preflight(cluster_preflight)
+        train_async_no_generation(args, evidence=evidence)
     except BaseException as exc:
         try:
             if evidence is not None:

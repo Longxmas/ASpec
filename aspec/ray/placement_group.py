@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 import os
 import socket
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -334,7 +335,13 @@ def _ensure_ray_initialized():
     if ray.is_initialized():
         return
 
-    ray_address = os.environ.get("RAY_ADDRESS", "auto")
+    # Target owns a separate Ray runtime. Do not auto-attach Draft to it (or
+    # another user's local cluster) merely because it was started last.
+    ray_address = os.environ.get("RAY_ADDRESS", "local")
+    if ray_address == "local":
+        ray.init(address="local", ignore_reinit_error=True, include_dashboard=False,
+                 _temp_dir=tempfile.mkdtemp(prefix="aspec-d-", dir="/tmp"))
+        return
     try:
         ray.init(address=ray_address, ignore_reinit_error=True)
         logger.info(f"Connected to Ray cluster at {ray_address}")
@@ -551,6 +558,42 @@ def create_placement_groups(args, roles: set[str] | None = None):
         raise ValueError(f"Invalid placement roles: {sorted(roles)}")
 
     _ensure_ray_initialized()
+
+    if getattr(args, "inference_engine_type", None) == "sgl":
+        managed_local = (getattr(args, "target_service", None) or {}).get("mode") == "managed-local"
+        if managed_local:
+            live_nodes = [node for node in ray.nodes() if node.get("Alive")]
+            if len(live_nodes) != 1 or live_nodes[0]["NodeID"] != ray.get_runtime_context().get_node_id():
+                raise ValueError("managed-local requires Draft Ray on the coordinator node only")
+        # Target owns its own CUDA-visible pool. A control proxy has no GPU
+        # reservation in Draft's Ray cluster, including for remote services.
+        _validate_custom_strategy_usage(args)
+        _validate_custom_placement_constraints(args)
+        result = {"training": None, "inference": None}
+        if "training" not in roles:
+            return result
+        count = args.training_num_nodes * args.training_num_gpus_per_node
+        _wait_for_gpu_resources(count)
+        if getattr(args, "placement_strategy", "training_first") == "custom":
+            constraints = _normalize_node_constraints(args, "training", required=True)
+            bundles, selectors, node_groups = _build_custom_bundles(
+                "training", constraints, count, args.training_num_gpus_per_node,
+            )
+            result["training"] = _create_placement_group(
+                count, strategy="PACK", name="training_pg", bundles=bundles,
+                bundle_label_selector=_merge_bundle_label_selectors(selectors),
+                node_group_indices=node_groups,
+            )
+        else:
+            result["training"] = _create_placement_group(count, strategy="PACK", name="training_pg")
+        if managed_local:
+            from aspec.utils.misc import visible_gpu_ids
+
+            allocated = {int(gpu) for gpu in result["training"][2]}
+            if allocated != set(visible_gpu_ids()):
+                ray.util.remove_placement_group(result["training"][0])
+                raise ValueError("Draft Ray GPU allocation differs from the managed-local GPU split")
+        return result
 
     if len(roles) == 1:
         if getattr(

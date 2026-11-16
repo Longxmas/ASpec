@@ -51,13 +51,16 @@ its declared public Hub ID. For private/local mirrors set `ASPEC_TARGET_MODEL` t
 with the same model identity. Qwen3.8-27B and multi-node training require that variable explicitly;
 multi-node training uses the same absolute local model path on every node.
 
+Start Target in its own environment before training. For DSpark on eight GPUs, run
+`CUDA_VISIBLE_DEVICES=4,5,6,7 aspec target` there and use GPUs 0–3 in Draft:
+
 ```bash
 aspec recipes list
 export ASPEC_TARGET_MODEL=/models/Qwen3-8B
 export ASPEC_TRAIN_DATA=/data/train.parquet
 export ASPEC_EVAL_DATA=/data/eval.parquet
 aspec recipes plan dspark
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 aspec recipes train dspark --output outputs/dspark-run-001
+CUDA_VISIBLE_DEVICES=0,1,2,3 aspec recipes train dspark --output outputs/dspark-run-001
 ```
 
 Prepare disjoint inputs using [data preparation](data.md). The launcher validates conversation JSONL
@@ -90,7 +93,7 @@ The `dspark` recipe is a general FA4/4T+4D training starting point. For online D
 the pinned runtime also supports cuDNN packed attention and direct TP1 prefill:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 aspec recipes train dspark --output outputs/dspark-cudnn-001 \
+CUDA_VISIBLE_DEVICES=0,1,2,3 aspec recipes train dspark --output outputs/dspark-cudnn-001 \
   --set training.attention_backend=cudnn_flex_attention \
   --set inference.target_prefill_memory_optimized=true
 ```

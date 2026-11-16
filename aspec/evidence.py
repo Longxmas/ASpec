@@ -40,7 +40,9 @@ from aspec.runtime_identity import (
 
 EVIDENCE_SCHEMA_VERSION = "aspec.run-evidence/v0alpha8"
 _PACKAGE_NAMES = (
-    "aspec",
+    "ling-aspec",
+    "ling-aspec-runtime",
+    "ling-aspec-target",
     "torch",
     "ray",
     "sglang",
@@ -179,7 +181,7 @@ def _source_identity(package_root: Path | None = None) -> dict[str, Any]:
     build_info = package / "_build_info.json"
     identity["build"] = json.loads(build_info.read_text()) if build_info.is_file() else None
     try:
-        identity["version"] = importlib.metadata.version("aspec")
+        identity["version"] = importlib.metadata.version("ling-aspec-runtime")
     except importlib.metadata.PackageNotFoundError:
         identity["version"] = None
     source_files = [path for path in package.rglob("*") if path.suffix in
@@ -303,6 +305,7 @@ class RunEvidenceRecorder:
                 "plan": plan_dict["source"],
                 "aspec": _source_identity(),
                 "packages": _package_versions(),
+                "package_scope": "draft_driver",
                 "backends": {"sglang": _module_source_identity("sglang")},
                 "host": {
                     "hostname": platform.node(),
@@ -427,6 +430,17 @@ class RunEvidenceRecorder:
             training_actor_statuses=training_actor_statuses,
             inference_engine_statuses=inference_engine_statuses,
         )
+        target_runtimes = [dict(status["runtime"]) for status in (inference_engine_statuses or ())
+                           if isinstance(status.get("runtime"), Mapping)]
+        if target_runtimes:
+            backend_identities = [item.get("backend_identity") for item in target_runtimes]
+            if (len(target_runtimes) != inference_engine_count
+                    or any(not isinstance(item, Mapping) or not item.get("effective_tree_sha256")
+                           or item.get("missing_files") for item in backend_identities)
+                    or len({item["effective_tree_sha256"] for item in backend_identities}) != 1):
+                raise RuntimeError("Target workers reported incomplete or different SGLang identities")
+            self._data["source"]["backends"]["sglang"] = dict(backend_identities[0])
+            self._data["source"]["target_runtimes"] = target_runtimes
 
         prior_runtime = self._data["observations"]["runtime"]
         if dataset_admission is not None:

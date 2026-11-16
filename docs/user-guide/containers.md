@@ -23,11 +23,17 @@ docker run --rm -it --gpus '"device=0,1"' --shm-size=16g \
   -v "$PWD/container-cache:/cache" -v "$PWD/container-outputs:/outputs" \
   -e ASPEC_CACHE_HOME=/cache aspec:local
 # Inside the container, choose either model:
-CUDA_VISIBLE_DEVICES=0,1 aspec quickstart ling-tiny --output /outputs/ling-tiny-001
+# First start Target in another terminal:
+# source /opt/aspec-target/bin/activate
+# CUDA_VISIBLE_DEVICES=0 aspec target
+CUDA_VISIBLE_DEVICES=1 aspec quickstart ling-tiny --output /outputs/ling-tiny-001
 # Or use qwen3-8b with a different fresh output.
 ```
 
-The image activates its venv through `PATH`/`VIRTUAL_ENV`; no additional setup is needed inside it.
+The image activates Draft through `PATH`/`VIRTUAL_ENV`. In another container terminal, activate
+`/opt/aspec-target/bin/activate` and run `aspec target` before training. Both environments are
+already installed. Optional [local supervision](installation.md#optional-local-supervision) can
+use `/opt/aspec-target/bin/python` instead of starting Target manually.
 The selected GPUs are numbered within the container. Mount an existing model explicitly and pass
 `--target /container/path/to/model` if downloading is undesirable. The image preserves NVIDIA's
 entrypoint and does not install a host driver, start a cluster, or assume SSH/shared storage.

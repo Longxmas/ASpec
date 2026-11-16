@@ -21,11 +21,15 @@ Use a dedicated Linux venv and the [pinned runtime](docs/user-guide/installation
 
 ```bash
 bash setup.sh --dev
+bash setup.sh --target --dev
 source .venv/bin/activate
 python -m ruff check aspec tests tools setup.py
 python -m tools.check_docs
-CUDA_VISIBLE_DEVICES="" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 bash tools/run_in_env.sh python -m pytest -q
+CUDA_VISIBLE_DEVICES="" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 bash tools/run_in_env.sh python -m pytest -q --ignore=tests/test_sgl_engine_factory.py --ignore=tests/test_inference_concurrency.py
 python -m tools.build_release --outdir /absolute/path/to/new-release-dist
+source .venv-target/bin/activate
+CUDA_VISIBLE_DEVICES="" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 aspec doctor --target
+python -m pytest -q tests/test_sgl_engine_factory.py tests/test_inference_concurrency.py tests/test_sgl_engine_decode.py
 ```
 
 Default tests are fast/offline. GPU, tokenizer, training and cuDNN gates need explicit switches
@@ -42,9 +46,11 @@ python -m pytest -q tests/source
 CUDA_VISIBLE_DEVICES="" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python -m pytest -q tests/cpu
 ```
 
-The separate [release build](.github/workflows/build-release.yml)
-workflow builds and audits sdist/wheel artifacts and checks wheel installation only when a `v*` tag
-is pushed; see [release instructions](docs/releasing.md). Neither workflow certifies GPU health or
+The separate [release build](.github/workflows/build-release.yml) workflow builds and audits
+sdist/wheel artifacts and checks wheel installation on manual runs and `v*` tag pushes.
+Manual runs only validate the artifacts and their installation. In `inclusionAI/ASpec`, tag pushes
+publish through the `pypi` environment; see [release instructions](docs/releasing.md).
+Neither workflow certifies GPU health or
 replaces the complete pinned-runtime suite above. Equivalent remote checks are not proof that hosted
 GitHub Actions has already run.
 

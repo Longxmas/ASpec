@@ -4,15 +4,18 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 venv="$repo_root/.venv"
 base_python=""
 options=()
+role=draft
+explicit_venv=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --venv|--python)
       [[ $# -ge 2 && -n $2 && $2 != --* ]] || { echo "$1 requires a value" >&2; exit 2; }
-      if [[ $1 == --venv ]]; then venv=$2; else base_python=$2; fi
+      if [[ $1 == --venv ]]; then venv=$2; explicit_venv=1; else base_python=$2; fi
       shift 2 ;;
+    --target) role=target; options+=("$1"); shift ;;
     --dev|--gpu) options+=("$1"); shift ;;
     --help)
-      echo 'Usage: bash setup.sh [--venv PATH] [--python EXECUTABLE] [--dev] [--gpu]'
+      echo 'Usage: bash setup.sh [--venv PATH] [--python EXECUTABLE] [--target] [--dev] [--gpu]'
       echo 'Creates an isolated Linux Python >=3.11 venv and installs pinned dependencies.'
       echo 'Defaults to .venv. Existing venvs require this checkout owner.'
       echo 'Does not install host packages/drivers, download models, start training or clean clusters.'
@@ -20,6 +23,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+if [[ $role == target && $explicit_venv == 0 ]]; then venv="$repo_root/.venv-target"; fi
 [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || {
   echo 'Use Linux x86-64; see docs/user-guide/installation.md.' >&2; exit 2;
 }
@@ -51,4 +55,7 @@ fi
 source "$venv/bin/activate"
 cd "$repo_root"
 bash tools/install.sh "${options[@]}"
-printf '\nSetup complete. Next:\n  source %q\n  aspec doctor --gpu\n  CUDA_VISIBLE_DEVICES=0,1 aspec quickstart ling-tiny --output outputs/ling-tiny-001\n' "$venv/bin/activate"
+printf '\nSetup complete. Activate with:\n  source %q\n' "$venv/bin/activate"
+if [[ $role == draft ]]; then
+  printf 'Prepare Target separately: bash setup.sh --target\nActivate its environment and start aspec target on the allocated Target GPUs.\nStart training from the Draft environment on its allocated GPUs.\n'
+fi

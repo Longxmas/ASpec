@@ -248,6 +248,8 @@ def require_single_gpu_node(pgs):
     """Validate actual GPU placements, not the number of nodes requested in YAML."""
     nodes = set()
     for role in ("training", "inference"):
+        if pgs[role] is None:
+            continue
         group, bundles, _gpu_ids = pgs[role]
         locations = ray.util.placement_group_table(group).get("bundles_to_node_id", {})
         for bundle in bundles:
@@ -492,6 +494,9 @@ def run_multi_draft(args, plan: MultiDraftPlan):
             destination.gpu_buffer_size = build_mooncake_config(child).gpu_buffer_size
             destination_configs[name] = destination
             init_refs[name] = group.async_init(child, "training", mooncake_config=destination)
+        source_args.aspec_read_owners = [
+            owner for statuses in actor_statuses.values() for owner in statuses
+        ]
         engines, engine_refs = prepare_inference_engines(source_args, pgs["inference"], mooncake)
         ray.get(engine_refs)  # Target initialization failure is a shared fault.
         producer_placements = ray.get([engine.get_status.remote() for engine in engines])
@@ -797,7 +802,10 @@ def run_multi_draft(args, plan: MultiDraftPlan):
                         hub.retire.remote(name, owners_fenced=True), timeout=30
                     ))
             for engine in engines:
-                cleanup(lambda: ray.get(engine.shutdown.remote(), timeout=30))
+                force_source = (owners_fenced and session["state"] != "completed"
+                                and getattr(source_args, "inference_engine_type", None) == "sgl")
+                shutdown_kwargs = {"force": True} if force_source else {}
+                cleanup(lambda: ray.get(engine.shutdown.remote(**shutdown_kwargs), timeout=30))
                 cleanup(lambda: ray.kill(engine, no_restart=True))
             master = getattr(source_args, "_mooncake_master_actor", None)
             if master is not None:
@@ -806,7 +814,7 @@ def run_multi_draft(args, plan: MultiDraftPlan):
             if hub is not None:
                 cleanup(lambda: ray.get(hub.close_queues.remote(), timeout=10))
                 cleanup(lambda: ray.kill(hub, no_restart=True))
-            unique_pgs = {item[0].id: item[0] for item in pgs.values()}
+            unique_pgs = {item[0].id: item[0] for item in pgs.values() if item is not None}
             for pg in unique_pgs.values():
                 cleanup(lambda pg=pg: ray.util.remove_placement_group(pg))
         else:

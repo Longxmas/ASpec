@@ -231,6 +231,8 @@ def test_host_staged_transport_does_not_hide_endpoint_without_metadata(tmp_path)
 
 
 def _feature_observation(plan):
+    policy = plan.workload.models["draft"]["attention"]
+    parallel = plan.policy.parallelism["training"]
     return {
         "state": "validated",
         "contract_id": plan.workload.features["contract_id"],
@@ -239,7 +241,20 @@ def _feature_observation(plan):
         "producer_metadata_validations": 8,
         "consumer_metadata_validations": 8,
         "consumer_tensor_validations": 8,
-        "participants": [],
+        "participants": [{
+            "role": "consumer",
+            "execution_metadata": {
+                "draft_attention_backend": [parallel["attention_backend"]],
+                "draft_context_parallel_size": [parallel["context_parallel"]],
+            },
+            "draft_attention": {
+                "head_layout": policy["head_layout"],
+                "context_windows": policy["context_windows"],
+                "window_semantics": policy.get("window_semantics", "anchor_context"),
+                "draft_block_attention": policy.get("draft_block_attention", "bidirectional"),
+                "forward_observed": True,
+            },
+        }],
     }
 
 
@@ -409,6 +424,33 @@ def _inference_engine_statuses(plan):
         }
         for rank in range(plan.policy.resources["inference"]["engines"])
     ]
+
+
+@pytest.mark.parametrize("different", [False, True])
+def test_backend_source_identity_is_reported_by_target_workers(tmp_path, different):
+    plan, recorder = _recorder(tmp_path)
+    statuses = _inference_engine_statuses(plan)
+    backend = {"path": "/target/site-packages/sglang", "git_revision": None,
+               "git_dirty": None, "effective_tree_sha256": "a" * 64,
+               "source_file_count": 3, "missing_files": []}
+    for status in statuses:
+        status["runtime"] = {"backend_identity": dict(backend), "sglang_version": "0.5.21"}
+    if different:
+        statuses[-1]["runtime"]["backend_identity"]["effective_tree_sha256"] = "b" * 64
+    arguments = dict(
+        training_actor_count=plan.policy.resources["training"]["world_size"],
+        inference_engine_count=len(statuses), inference_engine_statuses=statuses,
+        dataset_size=128, eval_dataset_size=0, cluster_resources={"CPU": 16, "GPU": 8},
+        alive_node_count=1,
+    )
+    if different:
+        with pytest.raises(RuntimeError, match="different SGLang identities"):
+            recorder.record_actor_initialization(**arguments)
+    else:
+        recorder.record_actor_initialization(**arguments)
+        assert recorder.data["source"]["backends"]["sglang"] == backend
+        assert recorder.data["source"]["package_scope"] == "draft_driver"
+        assert len(recorder.data["source"]["target_runtimes"]) == len(statuses)
 
 
 def test_static_multi_node_evidence_validates_actual_actor_placement(tmp_path):
@@ -669,6 +711,10 @@ def test_evidence_separates_initialized_and_end_to_end_capabilities(tmp_path):
             "final_metrics": {"train/avg_loss": 1.25},
             "checkpoint": {"enabled": False, "exists": False},
             "feature_contract": _feature_observation(plan),
+            "execution": {
+                "attention_backend": plan.policy.parallelism["training"]["attention_backend"],
+                "context_parallel_size": plan.policy.parallelism["training"]["context_parallel"],
+            },
         }
     )
     recorder.complete()
@@ -690,7 +736,6 @@ def test_evidence_separates_initialized_and_end_to_end_capabilities(tmp_path):
         "gpu_direct_transport",
         "target_prefill_output",
         "producer_consumer_pipeline",
-        "draft_attention_execution",
         "target_logits",
         "mixed_length_packing",
         "long_context_execution",
@@ -731,6 +776,10 @@ def test_required_performance_and_numerics_need_runtime_evidence(tmp_path):
             "optimizer_steps_observed": 3,
             "checkpoint": {"enabled": False, "exists": False},
             "feature_contract": _feature_observation(plan),
+            "execution": {
+                "attention_backend": plan.policy.parallelism["training"]["attention_backend"],
+                "context_parallel_size": plan.policy.parallelism["training"]["context_parallel"],
+            },
             "final_metrics": {"train/avg_loss": 1.25, "train/grad_norm": 2.5},
             "performance": {
                 "state": "measured",
@@ -884,6 +933,7 @@ def test_optimizer_step_without_contract_observation_is_incomplete(tmp_path):
     assert recorder.data["required_capabilities_pending"] == [
         "target_features",
         "tensor_transport",
+        "draft_attention_execution",
         "work_scheduler",
         "data_lifecycle",
         "capacity_control",

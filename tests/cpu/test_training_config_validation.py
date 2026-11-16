@@ -75,6 +75,13 @@ def test_load_config_accepts_positive_micro_batch_size():
     assert config.training.micro_batch_size == 2
 
 
+def test_single_node_config_rejects_cross_node_target_tp():
+    config = _resolved_config(micro_batch_size=2)
+    config.inference.sglang.nnodes = 2
+    with pytest.raises(ValueError, match="node-local"):
+        load_config(base_config=config)
+
+
 def _static_multi_node_config(protocol="rdma"):
     config = OmegaConf.structured(Config)
     config.cluster.mode = "static_multi_node"

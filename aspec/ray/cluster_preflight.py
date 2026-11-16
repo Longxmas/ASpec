@@ -283,7 +283,9 @@ def _filesystem_capacity(path: Path) -> dict[str, int]:
 
 def _collect_local_inventory(
     required_paths: Sequence[str], marker_path: str, marker_sha256: str,
-    storage_mode: str = "shared", output_dir: str | None = None
+    storage_mode: str = "shared", output_dir: str | None = None,
+    target_address: str | None = None,
+    roles: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     marker = Path(marker_path)
     if storage_mode == "node_local":
@@ -310,6 +312,17 @@ def _collect_local_inventory(
                          p.stat().st_size, file_digest(p)) for p in files]
             item["content_sha256"] = hashlib.sha256(json.dumps(identity, separators=(",", ":")).encode()).hexdigest()
     memlock_soft, memlock_hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+    target_runtime = None
+    if target_address:
+        from aspec.inference.service_protocol import request
+        from aspec.inference.target_runtime import release_version
+
+        info = request(target_address, "/v1/info", timeout=30)
+        target_runtime = info["runtime"]
+        if info["version"] != release_version():
+            raise ClusterPreflightError("Target and Draft ASpec release versions differ")
+        if info["node_ip"] != ray.util.get_node_ip_address():
+            raise ClusterPreflightError("Target service is not on the planned node")
     return {
         "node_id": ray.get_runtime_context().get_node_id(),
         "node_ip": ray.util.get_node_ip_address(),
@@ -317,8 +330,10 @@ def _collect_local_inventory(
         "python": sys.version.split()[0],
         "source_tree_sha256": _source_tree_sha256(),
         "packages": _package_versions(),
+        "roles": list(roles) if roles is not None else None,
+        "target_runtime": target_runtime,
         "runtime_artifacts": {
-            "sglang": module_runtime_identity(
+            "sglang": target_runtime["sglang"] if target_runtime else module_runtime_identity(
                 "sglang", relative_paths=SGLANG_RUNTIME_RELATIVE_PATHS
             ),
             "mooncake": module_runtime_identity("mooncake.engine"),
@@ -379,17 +394,31 @@ def validate_cluster_inventories(
     source_hashes = {node.get("source_tree_sha256") for node in inventories}
     if len(source_hashes) != 1 or None in source_hashes:
         raise ClusterPreflightError("ASpec source identity differs across nodes")
-    package_sets = {
-        json.dumps(node.get("packages"), sort_keys=True) for node in inventories
-    }
-    if len(package_sets) != 1:
+    package_sets = defaultdict(set)
+    for node in inventories:
+        roles = node.get("roles")
+        if roles is not None and (not roles or set(roles) - {"draft", "target"}):
+            raise ClusterPreflightError("Unknown or empty node runtime roles")
+        group = "legacy" if roles is None else "draft" if "draft" in roles else "target"
+        package_sets[group].add(json.dumps(node.get("packages"), sort_keys=True))
+        if roles and "target" in roles and not node.get("target_runtime"):
+            raise ClusterPreflightError("Target node did not report its isolated runtime")
+    if any(len(versions) != 1 for versions in package_sets.values()):
         raise ClusterPreflightError("required package versions differ across nodes")
-    runtime_artifact_sets = set()
+    if len({(node.get("packages") or {}).get("ray") for node in inventories}) != 1:
+        raise ClusterPreflightError("Ray versions differ across runtime roles")
+    target_sets = {json.dumps({key: value for key, value in node["target_runtime"].items()
+                              if key not in {"python", "prefix", "sglang"}}, sort_keys=True)
+                   for node in inventories if node.get("target_runtime")}
+    if len(target_sets) > 1:
+        raise ClusterPreflightError("Target runtime identities differ across nodes")
+    runtime_artifact_sets = defaultdict(set)
     for node in inventories:
         artifacts = node.get("runtime_artifacts") or {}
+        names = ("sglang", "mooncake") if node.get("roles") is None or "target" in node["roles"] else ("mooncake",)
         incomplete = {
             name: identity
-            for name in ("sglang", "mooncake")
+            for name in names
             if not isinstance((identity := artifacts.get(name)), Mapping)
             or not identity.get("effective_tree_sha256")
             or identity.get("missing_files")
@@ -399,21 +428,10 @@ def validate_cluster_inventories(
                 "required runtime artifact identity is incomplete on node "
                 f"{node.get('node_ip')}: {incomplete}"
             )
-        runtime_artifact_sets.add(
-            json.dumps(
-                {
-                    name: {
-                        "effective_tree_sha256": identity.get(
-                            "effective_tree_sha256"
-                        ),
-                        "file_count": identity.get("file_count"),
-                    }
-                    for name, identity in artifacts.items()
-                },
-                sort_keys=True,
-            )
-        )
-    if len(runtime_artifact_sets) != 1:
+        for name in names:
+            identity = artifacts[name]
+            runtime_artifact_sets[name].add((identity["effective_tree_sha256"], identity.get("file_count")))
+    if any(len(identities) != 1 for identities in runtime_artifact_sets.values()):
         raise ClusterPreflightError(
             "effective SGLang/Mooncake runtime artifacts differ across nodes"
         )
@@ -1153,13 +1171,20 @@ def run_cluster_preflight(args) -> dict[str, Any] | None:
     try:
         for node_ip in sorted(expected_ips):
             node_id = ray_nodes_by_ip[node_ip]["NodeID"]
+            roles = (["draft"] if node_ip in (getattr(args, "training_node_ips", None) or ()) else [])
+            if node_ip in (getattr(args, "inference_node_ips", None) or ()):
+                roles.append("target")
+            service = getattr(args, "target_service", None) or {}
+            target_address = ((service.get("addresses") or {}).get(node_ip, service.get(
+                "address", "http://127.0.0.1:30000")) if "target" in roles else None)
             refs.append(
                 probe.options(
                     scheduling_strategy=NodeAffinitySchedulingStrategy(
                         node_id=node_id, soft=False
                     )
                 ).remote(_required_paths(args), str(marker), marker_sha256,
-                         getattr(args, "cluster_storage_mode", "shared"), str(output_dir))
+                         getattr(args, "cluster_storage_mode", "shared"), str(output_dir),
+                         target_address, roles)
             )
         inventories = ray.get(
             refs,

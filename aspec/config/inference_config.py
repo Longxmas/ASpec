@@ -163,7 +163,17 @@ class OfflineTrainingConfig:
 
 
 @dataclass
+class TargetServiceConfig:
+    address: str = "http://127.0.0.1:30000"
+    addresses: Dict[str, str] = field(default_factory=dict)
+    mode: str = "external"
+    # Used only by the optional local supervisor, never by the Draft client.
+    python_executable: Optional[str] = None
+
+
+@dataclass
 class InferenceConfig:
+    target_service: TargetServiceConfig = field(default_factory=TargetServiceConfig)
     aux_hidden_states_layers: Optional[list] = None
     inference_batch_size: int = 1
     inference_buffer_threshold: int = 32

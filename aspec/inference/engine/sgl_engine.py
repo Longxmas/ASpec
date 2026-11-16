@@ -50,6 +50,7 @@ from aspec.inference.context import (
 )
 from aspec.inference.engine.base import InferenceEngine
 from aspec.inference.engine.sgl_engine_decode import SglDecodeEngineMixin
+from aspec.inference.service_protocol import validate_target_tp
 from aspec.ray.ray_actor import RayActor
 from aspec.transfer.mooncake.eagle_store import HIDDEN_STATES_STORAGE_DTYPE
 from aspec.utils.logging import logger, setup_file_logging
@@ -178,9 +179,10 @@ class SglEngine(SglDecodeEngineMixin, InferenceEngine, RayActor):
             rank: Engine rank for distributed setup.
             base_gpu_id: Base GPU ID from placement group.
             num_gpus_per_engine: Number of GPUs this engine uses (for TP).
-            node_rank: Node rank for multi-node TP (0 = head).
+            node_rank: Must be zero for a node-local TP group.
             engine_group: Group index to disambiguate multiple engine groups on the same node.
         """
+        validate_target_tp(getattr(args, "sglang_nnodes", 1), node_rank)
         self.args = args
         self.rank = rank
         self.base_gpu_id = base_gpu_id
@@ -225,10 +227,11 @@ class SglEngine(SglDecodeEngineMixin, InferenceEngine, RayActor):
 
         Args:
             mooncake_config: MooncakeConfig object for distributed storage.
-            dist_init_addr: Address for sglang cross-node NCCL init (auto-negotiated by factory).
-            pre_allocated_port: Base port pre-allocated by the factory. Required for
-                single-node setups; multi-node engines fall back to local scan.
+            dist_init_addr: Legacy control clients may pass None for a node-local group.
+            pre_allocated_port: Base port pre-allocated by the factory.
         """
+        if dist_init_addr is not None:
+            raise ValueError("A node-local Target TP group does not take a dist_init_addr")
         if self.base_gpu_id is not None:
             self.local_gpu_id = self.setup_gpu(self.base_gpu_id)
             logger.info(
@@ -288,22 +291,18 @@ class SglEngine(SglDecodeEngineMixin, InferenceEngine, RayActor):
         if pp_size != 1:
             raise ValueError(f"pp_size must be 1, got {pp_size}")
 
-        # tp_size: sglang tp_size is the TOTAL TP degree across all nodes
-        # e.g. 3 nodes × 8 GPUs → tp_size=24
-        nnodes = getattr(self.args, "sglang_nnodes", 1)
-        tp_size = nnodes * self.num_gpus_per_engine
+        tp_size = self.num_gpus_per_engine
         configured_tp_size = getattr(self.args, "sglang_tp_size", None)
         if configured_tp_size is not None and configured_tp_size != tp_size:
             raise ValueError(
                 f"sglang_tp_size ({configured_tp_size}) must equal "
-                f"nnodes * num_gpus_per_engine ({nnodes} * {self.num_gpus_per_engine} "
-                f"= {tp_size})"
+                f"num_gpus_per_engine ({tp_size})"
             )
 
         logger.info(
             f"SglEngine rank {self.rank}: BEFORE init - "
             f"base_gpu_id={self.base_gpu_id}, num_gpus={self.num_gpus_per_engine}, "
-            f"tp_size={tp_size}, pp_size={pp_size}, nnodes={nnodes}, node_rank={self.node_rank}, "
+            f"tp_size={tp_size}, pp_size={pp_size}, "
             f"aux_hidden_state_layer_ids={self.aux_hidden_state_layer_ids}"
         )
 
@@ -443,26 +442,8 @@ class SglEngine(SglDecodeEngineMixin, InferenceEngine, RayActor):
         engine_kwargs["port"] = pre_allocated_port
         engine_kwargs["nccl_port"] = pre_allocated_port + 1
 
-        # Multi-node TP support — always set nnodes/node_rank
-        engine_kwargs["nnodes"] = nnodes
-        engine_kwargs["node_rank"] = self.node_rank
-        if nnodes > 1:
-            # dist_init_addr: prefer parameter (auto-negotiated by factory), fallback to config
-            effective_addr = dist_init_addr or getattr(self.args, "sglang_dist_init_addr", None)
-            if effective_addr:
-                engine_kwargs["dist_init_addr"] = effective_addr
-            sglang_dist_timeout = getattr(self.args, "sglang_dist_timeout", 60)
-            engine_kwargs["dist_timeout"] = sglang_dist_timeout
-            logger.info(
-                f"SglEngine rank {self.rank}: multi-node TP enabled - "
-                f"nnodes={nnodes}, node_rank={self.node_rank}, "
-                f"dist_init_addr={effective_addr}, dist_timeout={sglang_dist_timeout}"
-            )
-
-        # Worker nodes (node_rank >= 1) block forever in _launch_subprocesses
-        # unless this env var is set. See sglang's engine.py.
-        if self.node_rank >= 1:
-            os.environ["SGLANG_BLOCK_NONZERO_RANK_CHILDREN"] = "0"
+        engine_kwargs["nnodes"] = 1
+        engine_kwargs["node_rank"] = 0
 
         from aspec.inference.sglang_v0521 import TrainingEngine, training_engine_kwargs
 

@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.metadata
 import json
 import subprocess
 import sys
@@ -20,7 +21,7 @@ from omegaconf import OmegaConf
 from aspec.assets import asset_path, recipe_config
 from aspec.commands import recipes
 from aspec.config.train_config import load_config
-from aspec.evidence import _source_identity
+from aspec.evidence import _package_versions, _source_identity
 from aspec.planning import compile_execution_plan
 
 
@@ -56,7 +57,18 @@ def test_installed_command_runner_preserves_cwd_and_arguments(tmp_path, monkeypa
     assert log.read_text().splitlines() == [str(tmp_path), value]
 
 
-def test_package_identity_hashes_bundled_patch_and_does_not_borrow_parent_git(tmp_path):
+def test_package_identity_hashes_bundled_patch_and_does_not_borrow_parent_git(tmp_path, monkeypatch):
+    versions = {"ling-aspec-runtime": "0.1.0b0", "aspec": "0.0.16"}
+
+    def version(name):
+        if name not in versions:
+            raise importlib.metadata.PackageNotFoundError(name)
+        return versions[name]
+
+    monkeypatch.setattr(importlib.metadata, "version", version)
+    observed = _package_versions()
+    assert observed["ling-aspec-runtime"] == "0.1.0b0"
+    assert "aspec" not in observed
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     package = tmp_path / "venv/lib/site-packages/aspec"
     package.mkdir(parents=True)
@@ -66,6 +78,7 @@ def test_package_identity_hashes_bundled_patch_and_does_not_borrow_parent_git(tm
     patch.parent.mkdir(parents=True)
     patch.write_text("first patch\n")
     first = _source_identity(package)
+    assert first["version"] == "0.1.0b0"
     assert first["revision"] is None and first["dirty"] is None
     assert first["build"] == {"revision": "a" * 40, "dirty": False}
     patch.write_text("second patch\n")

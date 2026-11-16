@@ -22,6 +22,16 @@ flowchart LR
 
 The diagram describes responsibilities, not a required class hierarchy or process topology.
 
+Target and Draft start in independent environments. A versioned JSON service interface carries
+model/capture identity, token requests, output descriptors and lifecycle calls; feature tensors use
+the existing Mooncake data plane. Draft's Ray reserves only training GPUs; Target exclusively
+leases GPUs from its own CUDA-visible pool. The control proxies require no GPUs and do not
+translate Draft GPU ordinals into Target allocations. Each side owns its runtime and native library paths.
+An optional local supervisor starts this same service and retains the full checkpoint/resume path.
+Lost control stops admission; source storage remains retained until reader process exit is verified.
+Reachable Targets acknowledge forced cleanup only after their session's source processes exit.
+Node-local fail-stop domain loss is recorded separately from observed process exit.
+
 ## Configuration, workload and Plan
 
 The configuration boundary translates supported native or TorchSpec-style inputs into canonical

@@ -48,15 +48,14 @@ def test_dspark_qk_uses_the_fa_cutlass_runtime_without_requiring_quack() -> None
     assert any(requirement.startswith("quack-kernels") for requirement in fa_runtime)
 
 
-def test_sglang_requirements_match_the_shared_cute_runtime() -> None:
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    expected = _shared_cute_requirements(
-        project["project"]["optional-dependencies"]["fa"]
-    )
-    requirements = {
-        line.strip()
-        for line in (ROOT / "requirements" / "sglang-v0.5.21.txt").read_text().splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-
-    assert expected <= requirements
+def test_draft_and_target_dependencies_are_separate():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    assert project["name"] == "ling-aspec-runtime"
+    core = project["dependencies"]
+    assert not any(x.startswith(("sglang", "torch==", "nvidia-cutlass", "quack", "flash-attn")) for x in core)
+    draft = (ROOT / "requirements/draft.txt").read_text()
+    target = (ROOT / "requirements/sglang-v0.5.21.txt").read_text()
+    assert "nvidia-cutlass-dsl[cu13]==4.7.1" in draft
+    assert "sglang==0.5.21" in target
+    assert "nvidia-cutlass" not in target and "quack-kernels" not in target
+    assert not (ROOT / "requirements/cute-overrides.txt").exists()

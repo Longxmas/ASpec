@@ -73,6 +73,7 @@ def _session(
 ):
     """Exercise the real session orchestrator without GPU jobs or sleeping."""
     args = SimpleNamespace(output_dir=str(tmp_path), inference_num_gpus=1,
+                           inference_engine_type="sgl",
                            aspec_context_contract={},
                            aspec_feature_contract={"contract_id": "union"})
     children = {
@@ -147,7 +148,7 @@ def _session(
     monkeypatch.setattr(
         multi_draft,
         "create_placement_groups",
-        lambda *_: {"training": (pg, [0, 1], [0, 1]), "inference": (pg, [2], [2])},
+        lambda *_: {"training": (pg, [0, 1], [0, 1]), "inference": None},
     )
     monkeypatch.setattr(multi_draft, "require_single_gpu_node", lambda *_: "node")
     monkeypatch.setattr(
@@ -177,6 +178,20 @@ def _session(
     return args, plan, recorders, engine
 
 
+def test_external_target_cleanup_persists_terminal_session_without_an_inference_pg(monkeypatch, tmp_path):
+    args, plan, recorders, engine = _session(monkeypatch, tmp_path)
+    multi_draft.run_multi_draft(args, plan)
+    evidence = json.loads((tmp_path / "evidence.json").read_text())
+    assert evidence["state"] == "completed"
+    assert evidence["read_owners_fenced"] and not evidence["cleanup_errors"]
+    engine.shutdown.remote.assert_called_once_with()
+    multi_draft.ray.util.remove_placement_group.assert_called_once()
+    assert multi_draft.ray.util.remove_placement_group.call_args.args[0].id == "owned-pg"
+    for recorder in recorders.values():
+        recorder.complete.assert_called()
+        recorder.fail.assert_not_called()
+
+
 def test_completed_draft_is_not_relabelled_failed_by_later_shared_fault(monkeypatch, tmp_path):
     args, plan, recorders, engine = _session(monkeypatch, tmp_path, source_error=True)
     with pytest.raises(RuntimeError, match="shared source failed later"):
@@ -184,7 +199,7 @@ def test_completed_draft_is_not_relabelled_failed_by_later_shared_fault(monkeypa
     for recorder in recorders.values():
         recorder.complete.assert_called_once()
         recorder.fail.assert_not_called()
-    engine.shutdown.remote.assert_called_once()
+    engine.shutdown.remote.assert_called_once_with(force=True)
     multi_draft.ray.util.remove_placement_group.assert_called_once()
     evidence = json.loads((tmp_path / "evidence.json").read_text())
     assert evidence["state"] == "failed"
@@ -346,7 +361,7 @@ def test_cp_lifecycle_harness_keeps_picklable_parent_and_resume_list(monkeypatch
         pass
 
     parent = recipe_gpu_smoke.AuditedTrainerActor
-    config = Path(__file__).parents[1] / "configs/examples/qwen3_8b_multi_algorithm_feature_views.yaml"
+    config = Path(__file__).parents[2] / "configs/examples/qwen3_8b_multi_algorithm_feature_views.yaml"
     monkeypatch.setattr(sys, "argv", [
         "lifecycle", "--config", str(config), "--output", str(tmp_path / "new"),
         "--resume-from", str(tmp_path / "old"), "--gpus", "8",

@@ -1,29 +1,44 @@
 # Advanced installation and native prerequisites
 
-Start with [one-command source setup](installation.md). This page explains its pinned lane,
-native prerequisites, compatibility exceptions and manual recovery procedures.
+Start with the [installation guide](installation.md). This page explains the supported runtime,
+native prerequisites and manual recovery procedures.
 
 The [release wheel](installation.md#install-a-release-wheel) includes public commands, formal recipes,
 Quickstart data and the pinned patch. Source setup and developer `python -m tools.*` commands below
-run from the repository root. Both installation forms use the same runtime lane and overrides.
+run from the repository root. Both installation forms use the same role dependency manifests.
+
+`pip install ling-aspec` installs the Draft training dependencies. In a separate Target venv,
+`pip install ling-aspec-target` installs SGLang and `aspec patch-sglang` applies its training patch.
+Both role packages depend on the same version of `ling-aspec-runtime`, which owns the code/CLI.
+`aspec doctor` selects the installed role; `--target` explicitly checks the Target setup.
+Start `aspec target` in Target and `aspec train --config ...` in Draft. The control service uses
+`inference.target_service.address`; metadata and token requests cross this interface, while feature
+tensors retain Mooncake transport. Use services on trusted cluster networks.
+Select each role's allocated GPUs with `CUDA_VISIBLE_DEVICES` before starting it.
+Target leases GPUs from its own visible pool; Draft's Ray reserves only training GPUs.
+For static multi-node runs, start a service on each Target node and set
+`inference.target_service.addresses` as a map from planned node IP to service URL.
 
 ## Requirements
 
 - Linux x86-64 with **glibc 2.34 or newer** (required by the pinned SGLang wheel); Python >=3.11. Check the host with `getconf GNU_LIBC_VERSION`.
-- A CUDA-13-compatible NVIDIA driver/runtime. This lane pins Torch2.13.0, SGLang0.5.21,
-  Transformers5.12.1, FA4 4.0.0b34, CUTLASS DSL 4.7.1 and Quack 0.6.5.
+- An NVIDIA driver compatible with the CUDA runtime selected by the
+  [dependency manifest](../../requirements/sglang-v0.5.21.txt).
 - Git, a C++20 compiler **and standard library supporting `std::bit_cast`**, and sufficient disk/host memory for CUDA wheels, models and checkpoints. The default SGLang JIT requires both compiler and library support; the presence of `g++` alone is insufficient.
 - The quickstart requires **two NVLink-connected GPUs**; larger recipes differ.
 
-Direct pins are in [requirements/sglang-v0.5.21.txt](../../requirements/sglang-v0.5.21.txt). They
-start from the [official pinned SGLang manifest](https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/python/pyproject.toml)
-and apply the ASpec-validated CUTLASS DSL 4.7.1 / Quack 0.6.5 compatibility override.
+[Draft pins](../../requirements/draft.txt) retain CUTLASS DSL 4.7.1 / Quack 0.6.5.
+[Target pins](../../requirements/sglang-v0.5.21.txt) use the
+[official SGLang requirements](https://github.com/sgl-project/sglang/blob/e00930c5489053f26d86b179cee0d087f846acbb/python/pyproject.toml),
+including CUTLASS DSL 4.6.2 / Quack 0.6.4, in their own environment. No dependency overrides are used.
+The default Linux training stack uses CUDA 13. Older supported data-center drivers may need the
+private compatibility libraries described below.
 CPU planning does not imply CPU training support.
 
 On Python 3.13, `outlines-core==0.1.26`, inherited through the pinned SGLang/Outlines dependency,
 may require a source build. Install a Rust toolchain (`rustc` and `cargo`) on `PATH` when no
-matching wheel is available; uv builds the extension during setup. Setup does not install host
-toolchains. The runtime lane pins `nvidia-cudnn-frontend==1.31.0` to retain CUTLASS DSL 4.7.1
+matching wheel is available; pip builds the extension during setup. Setup does not install host
+toolchains. The Draft role pins `nvidia-cudnn-frontend==1.31.0` to retain CUTLASS DSL 4.7.1
 compatibility; frontend 1.32 requires CUTLASS >=4.8.
 
 The C++20 requirement comes from the pinned SGLang JIT: its
@@ -40,8 +55,9 @@ printf '#include <bit>\nint main() { return std::bit_cast<unsigned>(1.0f) == 0; 
 ```
 
 SGLang also invokes the CUDA toolkit's `nvcc` for JIT kernels. Setup checks the executable selected
-by `CUDA_HOME`/`CUDA_PATH`, or `PATH` when those variables are unset. A CUDA-enabled PyTorch wheel
-alone does not establish that this compiler is discoverable. The optional container supplies a CUDA
+by `CUDA_HOME`/`CUDA_PATH`, or `PATH` when those variables are unset. The Target package installs its matching CUDA compiler; the CLI exposes a private development
+toolkit view for JITs that expect `lib64` and unversioned linker names. An explicit host toolkit
+selection is preserved. A CUDA-enabled PyTorch wheel alone does not establish compiler availability. The optional container supplies a CUDA
 13.0.2 development toolkit. Setup preserves an explicit host compiler/toolkit selection.
 
 Use `python -m tools.doctor --gpu` below to check the native Mooncake import in the selected venv. A missing RDMA library should be resolved in the environment before training.
@@ -55,29 +71,10 @@ bash tools/install.sh
 # Contributors use: bash tools/install.sh --dev
 ```
 
-The installer checks venv isolation, Linux/Python/glibc and C++20 `std::bit_cast`, installs the
-pinned requirements with their explicit uv overrides, applies/verifies the SGLang patch, then runs
-CPU doctor. `--gpu` additionally probes CUDA and Mooncake; select an idle GPU first. It does not
-create a venv or modify system packages/drivers. For each later command use
-`bash tools/run_in_env.sh COMMAND ...`; the example launcher uses this wrapper automatically.
-It discovers native libraries inside the active venv and rejects `PYTHONPATH`/`PYTHONHOME` injection.
-
-The underlying install command, for inspecting or managing the same environment manually, is:
-
-```bash
-python -m uv pip install --link-mode copy --python "$VIRTUAL_ENV/bin/python" \
-  --override requirements/cute-overrides.txt -r requirements/sglang-v0.5.21.txt -e ".[fa]"
-aspec patch-sglang
-```
-
-The official SGLang 0.5.21 metadata requires CUTLASS DSL 4.6.2 and Quack 0.6.4. ASpec's
-shared FA4/Q/K lane uses 4.7.1 and 0.6.5 through the explicit
-[override file](../../requirements/cute-overrides.txt). Ordinary pip resolution rejects this
-combination. The override leaves upstream metadata intact: `python -m pip check` reports these
-two mismatches. `python -m tools.doctor` discloses the exact exceptions and fails for any other
-active missing/conflicting dependency. It does not label the original metadata satisfied.
-`cuda-tile==1.6.0rc5`, required by SGLang, is pinned explicitly so resolution does not require
-allowing prereleases for unrelated dependencies.
+The installer checks venv isolation and native prerequisites, installs the role dependencies
+with normal pip resolution, and runs doctor. Use `bash setup.sh --target` for the separate Target
+venv; that role also applies/verifies the patch. `--gpu` probes CUDA and Mooncake on allocated GPUs.
+Installers do not modify host packages or drivers.
 
 CUDA dependencies occupy many gigabytes and contain many small files. Installation and cold JIT can
 be slow on shared filesystems; use local SSD storage for the venv/caches when available. Models and
@@ -102,14 +99,13 @@ ASpec ships the DSpark Q/K RMSNorm + indexed-RoPE forward and backward under
 `aspec.kernels.cutedsl`, without an external cuDNN source checkout or custom build. The implementation
 supports separate context/draft K planes, asymmetric GQA heads, deterministic FP32 norm-weight
 reduction, and the same BF16/FP16 operand precision as the eager reference. It requires
-`nvidia-cutlass-dsl[cu13]==4.7.1`; the default `fa` extra already provides that pin and retains
+`nvidia-cutlass-dsl[cu13]==4.7.1`; the Draft role provides that pin and retains
 `quack-kernels[cu13]==0.6.5` for the other fused training operations.
 
 Install the normal runtime, or only the kernel dependency for a focused environment:
 
 ```bash
-uv pip install --python "$VIRTUAL_ENV/bin/python" --override requirements/cute-overrides.txt \
-  -r requirements/sglang-v0.5.21.txt -e ".[fa,dspark-qk]"
+python -m pip install -r requirements/draft.txt -e .
 python -m tools.doctor
 ```
 
@@ -181,7 +177,7 @@ actor processes must inherit the library paths.
 
 | Step | Automation boundary |
 | --- | --- |
-| Python dependencies, two declared overrides, SGLang patch | `tools/install.sh`; patch check is idempotent |
+| Role dependencies and the SGLang patch | `tools/install.sh`; patch check is idempotent |
 | Venv-native library paths and optional private compatibility/cache paths | `tools/run_in_env.sh`; example launcher delegates to it |
 | Base Python/venv, C++ compiler, glibc, RDMA host libraries and driver | Provision the host first; checks do not install system packages |
 | Private CUDA compatibility package | Obtain/extract an appropriate NVIDIA package explicitly, then set the directory above |

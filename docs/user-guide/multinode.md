@@ -48,10 +48,16 @@ or supervised process; `--block` keeps the service attached to that session:
 
 ```bash
 # Head node
-bash tools/start_recipe_node.sh --head --node-ip-address="$HEAD_IP" --port="$RAY_PORT"
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/start_recipe_node.sh --head --node-ip-address="$HEAD_IP" --port="$RAY_PORT"
 # Worker node
-bash tools/start_recipe_node.sh --address="$HEAD_IP:$RAY_PORT" --node-ip-address="$WORKER_IP"
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/start_recipe_node.sh --address="$HEAD_IP:$RAY_PORT" --node-ip-address="$WORKER_IP"
 ```
+
+In each node's separate Target environment, start
+`CUDA_VISIBLE_DEVICES=4,5,6,7 aspec target --address http://NODE_IP:30000`.
+Set `inference.target_service.addresses` in the training config to map each planned
+Target node IP to that service URL. Draft's Ray cluster reserves only GPUs 0–3;
+each Target service leases its own GPUs 4–7.
 
 Before starting either node, provision the same private Ray authentication token in a local file on
 each node and set `RAY_AUTH_MODE=token` and `RAY_AUTH_TOKEN_PATH` there. Set both in the driver's shell

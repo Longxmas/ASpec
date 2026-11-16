@@ -39,7 +39,10 @@ def acceptance(recipe, output, steps):
     return run_acceptance(recipe, catalog()[recipe], output, steps, inputs=check_inputs(recipe, acceptance=True))
 
 
-def fault_check(recipe, action, output):
+def fault_check(recipe, action, output, overrides=()):
+    from omegaconf import OmegaConf
+
+    from aspec.assets import recipe_config
     from aspec.reporting import build_run_report
 
     entry = catalog()[recipe]
@@ -60,13 +63,17 @@ def fault_check(recipe, action, output):
     }
     try:
         if entry["nodes"] == 1:
+            config = OmegaConf.merge(recipe_config(entry["configs"][0]), OmegaConf.from_dotlist(overrides))
+            expected_gpus = entry["draft_gpus"]
+            if OmegaConf.select(config, "inference.target_service.mode", default="external") == "managed-local":
+                expected_gpus = entry["gpus"]
             devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
             if (
-                len(devices) != entry["gpus"]
+                len(devices) != expected_gpus
                 or any(not d for d in devices)
                 or len(set(devices)) != len(devices)
             ):
-                raise ValueError("Select the recipe's allocated GPUs explicitly")
+                raise ValueError(f"Select exactly {expected_gpus} role-allocated GPUs explicitly")
         overrides = [
             "training.num_train_steps=8",
             "training.lr_total_steps=8",
@@ -76,6 +83,7 @@ def fault_check(recipe, action, output):
             "training.save_final_checkpoint=true",
             "dataset.eval_interval=4",
             f"cache_dir={output / 'cache'}",
+            *overrides,
         ]
         command = [
             sys.executable,
@@ -140,7 +148,10 @@ def fault_check(recipe, action, output):
             if report.get("cleanup_errors") or report.get("read_owners_fenced") is False:
                 raise ValueError("Failure cleanup/fencing failed")
             for child in report.get("experiments", {"single": report}).values():
-                lifecycle = child.get("cleanup", {}).get("work_lifecycle", {})
+                cleanup = child.get("cleanup", {})
+                if cleanup.get("state") != "completed":
+                    raise ValueError("Failure cleanup did not complete")
+                lifecycle = cleanup.get("work_lifecycle", {})
                 if lifecycle.get("resident_outputs") != 0 or lifecycle.get("resident_bytes") != 0:
                     raise ValueError("Terminal ownership was not proven empty")
         result.update(status="passed", report=report)
@@ -160,6 +171,7 @@ def main():
     fault.add_argument("recipe", choices=("shared-target", "multinode"))
     fault.add_argument("--action", dest="fault_action", choices=("fail", "slow"), default="fail")
     fault.add_argument("--output", required=True)
+    fault.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     cp = sub.add_parser("cp-check")
     cp.add_argument("--output", required=True)
     exp = sub.add_parser("export")
@@ -197,7 +209,7 @@ def main():
                 "tests/cpu/test_recipe_node_loss.py",
                 "tests/cpu/test_owner_fence.py",
                 "tests/cpu/test_recipe_capacity.py",
-                "tests/test_loop_cleanup.py",
+                "tests/cpu/test_loop_cleanup.py",
                 "tests/cpu/test_stage_recipe_inputs.py",
                 "tests/test_packing.py",
                 "tests/test_direct_cp.py",
@@ -213,7 +225,7 @@ def main():
             ]
         )
     elif args.action == "fault-check":
-        fault_check(args.recipe, args.fault_action, args.output)
+        fault_check(args.recipe, args.fault_action, args.output, overrides=args.set)
     elif args.action == "cp-check":
         import xml.etree.ElementTree as ET
 

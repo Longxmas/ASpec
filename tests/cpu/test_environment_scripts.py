@@ -76,6 +76,32 @@ def test_installer_rejects_unknown_options_without_installing():
     assert "Unknown argument" in result.stderr
 
 
+def test_pip_cuda_toolkit_links_like_a_development_install_without_changing_wheels(tmp_path, monkeypatch):
+    from aspec import _environment
+
+    purelib = tmp_path / "site-packages"
+    toolkit = purelib / "nvidia/cu13"
+    (toolkit / "bin").mkdir(parents=True)
+    (toolkit / "bin/nvcc").write_text("compiler fixture")
+    (toolkit / "lib").mkdir()
+    library = toolkit / "lib/libcudart.so.13"
+    library.write_bytes(b"runtime fixture")
+    monkeypatch.setattr(_environment.sysconfig, "get_paths", lambda: {"purelib": str(purelib)})
+    monkeypatch.setenv("VIRTUAL_ENV", sys.prefix)
+    monkeypatch.setenv("ASPEC_CACHE_HOME", str(tmp_path / "cache"))
+    for key in ("CUDA_HOME", "CUDA_PATH", "PYTHONPATH", "PYTHONHOME", "ASPEC_CUDA_COMPAT_DIR"):
+        monkeypatch.delenv(key, raising=False)
+    environment = _environment.command_environment()
+    view = Path(environment["CUDA_HOME"])
+    assert (view / "lib64/libcudart.so").resolve() == library
+    assert (view / "bin/nvcc").resolve() == toolkit / "bin/nvcc"
+    assert environment["LIBRARY_PATH"].split(":")[0] == str(view / "lib64")
+    assert not (toolkit / "lib64").exists()
+    assert not (toolkit / "lib/libcudart.so").exists()
+    assert library.read_bytes() == b"runtime fixture"
+    assert _environment.command_environment()["CUDA_HOME"] == str(view)
+
+
 @pytest.mark.parametrize("version", [(3, 10), (3, 11), (3, 12), (3, 13), (3, 14)])
 def test_environment_wrapper_enforces_only_the_python_minimum(monkeypatch, version):
     from aspec import _environment

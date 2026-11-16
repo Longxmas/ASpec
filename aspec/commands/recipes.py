@@ -27,7 +27,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from aspec._environment import command_environment
+from aspec._environment import command_environment, require_draft_environment
 from aspec.assets import asset_path, asset_root, recipe_config
 
 ROOT = asset_root()
@@ -265,22 +265,33 @@ def stop_memory_monitor(process, stream):
     stream.close()
 
 
-def acceptance(recipe, output, steps):
-    return run_acceptance(recipe, catalog()[recipe], output, steps, inputs=check_inputs(recipe, acceptance=True))
+def acceptance(recipe, output, steps, overrides=()):
+    return run_acceptance(recipe, catalog()[recipe], output, steps,
+                          inputs=check_inputs(recipe, acceptance=True), overrides=overrides)
 
 
-def run_acceptance(recipe, entry, output, steps, *, inputs, prepared_config=None, progress=None):
+def run_acceptance(recipe, entry, output, steps, *, inputs, prepared_config=None, progress=None, overrides=()):
+    require_draft_environment()
     if steps < 2 or steps % 2:
         raise ValueError("--steps must be a positive even number >= 2")
     if entry["nodes"] == 1:
+        from omegaconf import OmegaConf
+
+        config = prepared_config if prepared_config is not None else recipe_config(entry["configs"][0])
+        if overrides:
+            config = OmegaConf.merge(config, OmegaConf.from_dotlist(overrides))
+        expected_gpus = entry["draft_gpus"]
+        if OmegaConf.select(config, "inference.target_service.mode", default="external") == "managed-local":
+            expected_gpus = entry["gpus"]
         devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
         if (
-            len(devices) != entry["gpus"]
+            len(devices) != expected_gpus
             or any(not d.strip() for d in devices)
             or len(set(devices)) != len(devices)
         ):
             raise ValueError(
-                f"Select exactly {entry['gpus']} allocated GPUs with CUDA_VISIBLE_DEVICES"
+                f"Select exactly {expected_gpus} Draft GPUs with CUDA_VISIBLE_DEVICES "
+                "(include Target GPUs only for managed-local)"
             )
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -320,11 +331,14 @@ def run_acceptance(recipe, entry, output, steps, *, inputs, prepared_config=None
     try:
         announce("Checking GPU environment")
         if recipe == "qwen27b-long":
+            from aspec.commands._recipe_capacity import memory_gpu_ids
+
+            memory_devices = memory_gpu_ids(config, entry)
             memory_stream = (output / "gpu-memory.csv").open("w")
             memory_monitor = subprocess.Popen(
                 [
                     "nvidia-smi",
-                    f"--id={os.environ['CUDA_VISIBLE_DEVICES']}",
+                    "--id=" + ",".join(map(str, memory_devices)),
                     "--query-gpu=timestamp,index,uuid,memory.used,memory.total",
                     "--format=csv",
                     "--loop=1",
@@ -355,6 +369,7 @@ def run_acceptance(recipe, entry, output, steps, *, inputs, prepared_config=None
                 "logging.use_wandb=false",
                 f"dataset.eval_interval={steps // 2}",
                 f"cache_dir={output / 'cache'}",
+                *overrides,
             ]
             announce("Inspecting the execution Plan")
             execute(
@@ -389,21 +404,20 @@ def run_acceptance(recipe, entry, output, steps, *, inputs, prepared_config=None
                 )
             for label, limit in (("first", steps // 2), ("resumed", steps)):
                 run = stage / label
-                overrides = [*base, f"training.num_train_steps={limit}"]
+                stage_overrides = [*base, f"training.num_train_steps={limit}"]
                 if label == "resumed":
                     if recipe == "shared-target":
                         from omegaconf import OmegaConf
 
-                        experiments = OmegaConf.to_container(
-                            OmegaConf.load(ROOT / config).experiments, resolve=True
-                        )
+                        first = OmegaConf.load(stage / "first" / "config.yaml")
+                        experiments = OmegaConf.to_container(first.experiments, resolve=True)
                         for experiment in experiments:
                             experiment.setdefault("training", {})["load_path"] = str(
                                 stage / "first" / experiment["name"] / "checkpoints"
                             )
-                        overrides.append("experiments=" + json.dumps(experiments))
+                        stage_overrides.append("experiments=" + json.dumps(experiments))
                     else:
-                        overrides.append(f"training.load_path={stage / 'first' / 'checkpoints'}")
+                        stage_overrides.append(f"training.load_path={stage / 'first' / 'checkpoints'}")
                 command = [
                     sys.executable,
                     "-m",
@@ -419,7 +433,7 @@ def run_acceptance(recipe, entry, output, steps, *, inputs, prepared_config=None
                     command += ["--cluster-address", os.environ["RAY_ADDRESS"]]
                 announce(f"Training the first {limit} steps" if label == "first"
                          else f"Restoring the checkpoint and continuing to step {limit}")
-                execute([*command, *overrides], stage / f"{label}.log")
+                execute([*command, *stage_overrides], stage / f"{label}.log")
                 children = audit_run(
                     run,
                     limit,
@@ -445,7 +459,7 @@ def run_acceptance(recipe, entry, output, steps, *, inputs, prepared_config=None
             memory_monitor = None
             from aspec.commands._recipe_capacity import summarize_memory
 
-            result["capacity"] = summarize_memory(output / "gpu-memory.csv", expected_gpus=8)
+            result["capacity"] = summarize_memory(output / "gpu-memory.csv", expected_gpus=entry["gpus"])
         result["status"] = "passed"
     except BaseException as error:
         result["status"] = "failed"
@@ -476,12 +490,14 @@ def main():
         command = sub.add_parser(action)
         command.add_argument("recipe", choices=catalog())
         command.add_argument("--output", required=action != "plan")
+        command.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
         if action == "accept":
             command.add_argument("--steps", type=int, default=8)
         else:
             command.add_argument("--stage", type=int, default=1)
-            command.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
     args = parser.parse_args()
+    if args.action in {"train", "accept"}:
+        require_draft_environment()
     if args.action == "list":
         for name, entry in catalog().items():
             print(f"{name:16} {entry['model']:18} {entry['nodes']} node(s), {entry['gpus']} GPUs")
@@ -503,7 +519,7 @@ def main():
             print(path.resolve())
         return
     if args.action == "accept":
-        acceptance(args.recipe, args.output, args.steps)
+        acceptance(args.recipe, args.output, args.steps, args.set)
         return
     if not 1 <= args.stage <= len(entry["configs"]):
         parser.error("Invalid stage for recipe")

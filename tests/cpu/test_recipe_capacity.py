@@ -19,6 +19,26 @@ import pytest
 from tools.validation.recipe_capacity import audit_long_run, summarize_memory
 
 
+@pytest.mark.parametrize("fault", ["remote", "busy", "incomplete"])
+def test_capacity_rejects_unobservable_or_unavailable_target_allocation(monkeypatch, fault):
+    from omegaconf import OmegaConf
+
+    from aspec.commands._recipe_capacity import memory_gpu_ids
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "6,7")
+    monkeypatch.setattr("aspec.utils.misc.get_current_node_ip", lambda: "local")
+    info = {"node_ip": "local", "devices": list(range(6)), "engines": {}, "draining": False}
+    if fault == "remote":
+        info["node_ip"] = "another-host"
+    elif fault == "busy":
+        info["engines"] = {"another-session": {"state": "ready"}}
+    else:
+        info["devices"] = [0, 1]
+    monkeypatch.setattr("aspec.inference.service_protocol.request", lambda *_a, **_k: info)
+    with pytest.raises(ValueError, match="Draft host|idle Target|allocated Target"):
+        memory_gpu_ids(OmegaConf.create({}), {"target_gpus": 6})
+
+
 @pytest.mark.parametrize("backend", ["fa4", "cudnn_flex_attention"])
 @pytest.mark.parametrize("broken", [None, "short", "empty", "cp1", "padding", "backend"])
 def test_long_capacity_requires_observed_full_context(tmp_path, broken, backend):

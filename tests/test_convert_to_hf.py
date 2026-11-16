@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib.metadata
 import json
 
 import pytest
@@ -53,6 +54,10 @@ def _model():
 
 
 def test_convert_checkpoint_writes_strict_loadable_serving_artifact(tmp_path, monkeypatch):
+    versions = {"ling-aspec-runtime": "0.1.0b0", "aspec": "0.0.16"}
+    original_version = importlib.metadata.version
+    monkeypatch.setattr(importlib.metadata, "version",
+                        lambda name: versions[name] if name in versions else original_version(name))
     torch.manual_seed(7)
     source = _model()
     checkpoint = tmp_path / "iter_0000002" / "model"
@@ -79,6 +84,7 @@ def test_convert_checkpoint_writes_strict_loadable_serving_artifact(tmp_path, mo
     for key, value in expected.items():
         torch.testing.assert_close(exported[key], value)
     exported_config = json.loads((output / "config.json").read_text())
+    assert exported_config["_aspec_version"] == "0.1.0b0"
     assert exported_config["model_type"] == "qwen3"
     assert exported_config["num_target_layers"] == 2
     assert exported_config["dflash_config"] == {

@@ -15,12 +15,14 @@
 """Workflow shortcuts and native-library bootstrap for the public CLI."""
 import sys
 
-from aspec._environment import execute
+from aspec._environment import execute, is_target_environment
 
 
 def main():
     arguments = sys.argv[1:]
     modules = {
+        "train": "aspec.train_entry",
+        "target": "aspec.inference.service",
         "quickstart": "aspec.commands.quickstart",
         "recipes": "aspec.commands.recipes",
         "doctor": "aspec.commands.doctor",
@@ -45,6 +47,9 @@ def main():
         module = modules[arguments.pop(0)]
     else:
         module = "aspec.train_entry"
+    help_requested = arguments in (["--help"], ["-h"])
+    if module == "aspec.inference.service" and not help_requested and not is_target_environment():
+        raise SystemExit("Start aspec target in the Target environment (pip install ling-aspec-target)")
     try:
         execute([sys.executable, "-m", module, *arguments])
     except (ValueError, OSError) as error:

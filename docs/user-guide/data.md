@@ -23,12 +23,27 @@ admitted, skipped and DP-truncated counts. Epoch-scoped work count is not unique
 The Qwen3-8B quality recipe generates answers from the actual Target, saving exact non-thinking prompt
 IDs, generated IDs, supervision and a resumable manifest. Original assistant answers are not input.
 
+Prepare the input rows in Draft.
+
 ```bash
+source .venv/bin/activate
 aspec prepare-data --output-dir data/raw
+```
+
+Generate responses in Target.
+
+```bash
+source .venv-target/bin/activate
 aspec prepare-target-data --target /path/to/Qwen3-8B \
   --train-data data/raw/open_perfectblend_train_65536.jsonl \
   --eval-data data/raw/open_perfectblend_eval_1024.jsonl \
   --output-dir data/target-generated --dp 8
+```
+
+Convert the generated rows in Draft.
+
+```bash
+source .venv/bin/activate
 aspec convert-data \
   data/target-generated/train.jsonl data/target-generated/train.parquet --batch-rows 256
 aspec convert-data \

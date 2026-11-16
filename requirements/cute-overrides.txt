@@ -1,4 +1,0 @@
-# Intentional, GPU-validated overrides of SGLang 0.5.21 metadata.
-# The environment doctor reports these exact exceptions and rejects other conflicts.
-nvidia-cutlass-dsl[cu13]==4.7.1
-quack-kernels[cu13]==0.6.5

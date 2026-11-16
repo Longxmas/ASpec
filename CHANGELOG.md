@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Install independent Draft (`ling-aspec`) and Target (`ling-aspec-target`) environments,
+  sharing the version-aligned `ling-aspec-runtime` code package. Target retains SGLang's own
+  dependency requirements; no resolver overrides are used. Start `aspec target` and `aspec train`
+  in their respective environments and connect by service address. Optional managed-local
+  supervision uses the same service interface and retains full checkpoint/resume.
+- Keep `aspec patch-sglang` limited to patching files. Report role-specific worker provenance,
+  and expose pip CUDA toolkit libraries through a private JIT development view.
+- Set the first PyPI version to `0.1.0b0`; developers maintain release versions with the `b0`
+  suffix while CI checks the matching tag without changing the version.
+- Use `ling-aspec` as the distribution name, retaining the `aspec` namespace and CLI. Publish
+  audited tag artifacts to PyPI after wheel installation checks through the GitHub `pypi` environment.
+- Allow repeatable manual build/install validation without publication; reserve PyPI uploads
+  for version tag pushes.
 - Consolidate supplementary examples around distinct workflows; use recipe/config overrides for
   alternative lengths, backends and structure combinations.
 - Advance fully committed restored epochs for repeating training sources, including new

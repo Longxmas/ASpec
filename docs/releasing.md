@@ -1,82 +1,65 @@
-# Preparing a release
+# Releasing
 
-Wheels contain the runtime, public CLI, model JSON assets, formal recipes, Quickstart conversations,
-runtime dependency manifests and the pinned SGLang patch. Source distributions also contain full
-documentation, tests, setup and maintenance tools. Canonical resource files live in their existing
-source locations; `setup.py` collects them into the wheel during the build.
+ASpec publishes the Draft package `ling-aspec`, Target package `ling-aspec-target`, and
+shared code package `ling-aspec-runtime` at the same version. Python imports and the CLI use `aspec`.
 
-## Prepare
+## Versioning
 
-1. Select a clean, reviewed commit and set its version in `pyproject.toml`.
-2. Update the changelog, user guides, supported paths and relevant examples.
-3. Check source attribution, license texts and security-reporting instructions. Model and dataset
-   redistribution terms are separate from the source license.
-4. Before publishing a new repository, check both files and Git history for private material.
-   A reviewed source export need not include development history.
+Maintainers set `project.version` in [pyproject.toml](../pyproject.toml).
+Current prereleases use `<major>.<minor>.<patch>b0`; maintainers choose the base version.
+Tags must match `v<version>` exactly. CI validates the version without changing it.
+See the [Python version specification](https://packaging.python.org/en/latest/specifications/version-specifiers/).
 
-## Verify
+## Release checks
 
-Use a dedicated Linux venv and run the checks in [CONTRIBUTING.md](../CONTRIBUTING.md).
-Build into an empty output directory:
+Run the checks in [CONTRIBUTING.md](../CONTRIBUTING.md) and the relevant
+[validation gates](contributing/validation.md) for the changes being released.
+Build from a clean, reviewed commit:
 
 ```bash
-python -m tools.build_release --outdir /absolute/path/to/new-release-dist
+python -m tools.build_release --outdir dist
 ```
 
-This command builds the sdist and then its wheel, audits both, collects the two runtime requirement
-files under `runtime/`, and writes `SHA256SUMS`. It rejects a nonempty output directory.
-`python -m build` and `python -m tools.audit_release DIST` remain available separately.
+The output directory must be empty. The command builds and audits the sdist and wheel,
+includes the runtime requirement files, and records their checksums in `SHA256SUMS`.
+Verify source attribution and license texts, and exclude credentials, datasets, weights,
+checkpoints and local environment files.
 
-[GitHub CI](../.github/workflows/ci.yml) runs source quality checks and CPU/offline contracts on pull
-requests and configured branch pushes. It does not build distributions. Packaging-related source
-contracts remain in that suite so resource and audit regressions can be found before tagging.
+The [release workflow](../.github/workflows/build-release.yml) checks package metadata,
+builds the distributions, and validates the installed wheel outside the source checkout.
+Manual runs perform these checks without publishing. CPU installation checks do not replace
+the GPU validation required for runtime changes.
 
-The separate [release build workflow](../.github/workflows/build-release.yml) runs when a `v*` tag is
-pushed to GitHub. Creating a local tag alone does not trigger it. The tag must exactly match `v` plus
-the version in `pyproject.toml`, for example `v0.1.0rc1` for `0.1.0rc1`; a mismatch fails before
-building. The workflow runs the same build command, saves the audited release bundle as the
-`aspec-distributions` workflow artifact, and runs a dependent `wheel-install` job on Python 3.11.
-That job checks SHA256s, installs the built wheel in a dedicated CPU venv, and executes:
+Wheels include the CLI, model configurations, recipes, Quickstart data, runtime requirement
+files and the SGLang patch. Source distributions also include documentation, tests and
+maintenance tools. `setup.py` collects resources from their canonical source locations.
 
-```bash
-python tools/check_wheel_install.py
-```
+## Publishing configuration
 
-The check changes to a temporary working directory and verifies installed module origins, CLI help,
-recipe copying and Plan generation, both Quickstart Plans, read-only doctor, package/build identities,
-and actual SGLang patch application, repetition and conflict rejection. It uses the CPU CI dependency
-subset and the official SGLang wheel without its GPU dependencies. Missing full-runtime requirements
-must keep doctor non-ready; this fixture is not production dependency or GPU/training acceptance.
+In the release repository, configure a GitHub environment named `pypi`:
 
-- Include runtime/model assets, patches, requirements, guides, recipes, source tools, source
-  headers and applicable license texts.
-- Exclude credentials, private endpoints, local environments, datasets, weights, checkpoints,
-  profiler traces and generated logs. Build from the reviewed tree, not a dirty working directory.
-- Unpack the sdist into a fresh directory and check documentation and tool entry points there.
-- Install the wheel in a fresh venv and run `aspec patch-sglang` from outside the source tree
-  against the pinned SGLang installation. Verify application, repeat application and read-only
-  `--check`; wrong versions or conflicting hunks must fail without overwriting files.
-- In a fresh environment, follow installation and Quickstart through training, recovery and export.
-  For runtime changes, run the relevant [GPU, numerical and fault checks](contributing/validation.md).
-  A documentation-only change does not require a new all-algorithm training matrix.
+- Add the environment secret `PYPI_API_TOKEN` with an account-wide PyPI token whose account can
+  publish all three distributions. This workflow uploads them together; a token scoped to one
+  project cannot authorize the other two.
+- Allow deployments from `v*` tags.
+- Add required reviewers if releases need approval before upload.
 
-Benchmark pages should contain results, methods, relevant limitations and reproduction entry points.
-Historical raw records and per-artifact hash inventories are not required release assets.
-Evidence records the effective installed package hash (including the bundled patch and assets),
-distribution version and build provenance when available. A wheel does not borrow Git identity from
-an enclosing checkout; unavailable build revision remains unknown.
+See [PyPI token setup](https://packaging.python.org/en/latest/guides/distributing-packages-using-setuptools/#create-an-account)
+and [GitHub environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
 
 ## Publish
 
-Before pushing a version tag, verify that its exact commit has passed the CI source checks and the
-applicable release checks above. The tag workflow does not rerun the source test suite. After pushing,
-require both `build` and `wheel-install` to pass; an uploaded artifact alone is not installation
-acceptance. A failed run can be rerun for the same tag after an infrastructure issue is resolved;
-source fixes require a new reviewed commit and version/tag.
+1. Merge the release changes, including the selected version and changelog, into `main`.
+   Require source CI and the applicable release checks to pass for that commit.
+2. Create and push the matching `v<version>` tag in `inclusionAI/ASpec`.
+   Mark a corresponding GitHub Release as a prerelease when the package version is a prerelease.
+3. In **Actions → Build and publish release**, require `build` and `wheel-install` to pass.
+   Review the `aspec-distributions` artifact and approve the `pypi` deployment if approval is configured.
+4. The `publish` job verifies checksums and uploads the same wheel and sdist to PyPI.
+   It runs only for version-tag pushes in `inclusionAI/ASpec`.
+5. Check the [PyPI release](https://pypi.org/project/ling-aspec/) and follow the
+   [installation guide](user-guide/installation.md) in a fresh Linux environment.
 
-The release build only saves Actions artifacts. It does not create a GitHub Release or publish to
-PyPI; publication is a separate, explicitly authorized step.
-
-Review the exact artifacts, repository destination, version/tag and release notes. Summarize checks
-actually performed and any known limitations. Publish only the reviewed source and artifacts;
-retain the corresponding build and validation records separately.
+PyPI does not allow replacing an uploaded distribution file. Inspect an interrupted upload
+before retrying; source changes require a new version. Retain the build and validation records.
+The workflow does not create a GitHub Release.

@@ -13,6 +13,10 @@ directory. A small input subset is useful for a first run: generation saves **al
 admitted samples, regardless of the training step limit. Features can occupy much
 more disk space than the source text.
 
+For feature generation, keep `CUDA_VISIBLE_DEVICES=0 aspec target` running in the
+separate Target environment. Run the commands below in Draft. Generation releases
+its Target workers before the same GPU is reused for offline training.
+
 ```bash
 export ASPEC_TARGET_MODEL=/path/to/Qwen3-8B
 export ASPEC_TRAIN_DATA=/path/to/train.jsonl

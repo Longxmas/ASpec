@@ -201,7 +201,7 @@ def test_fault_check_rejects_startup_failure(tmp_path, monkeypatch):
     import subprocess
 
     monkeypatch.setattr(recipes, "check_inputs", lambda _: {})
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
 
     def startup_failure(*args, **kwargs):
         raise subprocess.CalledProcessError(1, ["startup"])
@@ -211,6 +211,115 @@ def test_fault_check_rejects_startup_failure(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="Injection was not observed"):
         recipes.fault_check("shared-target", "fail", output)
     assert json.loads((output / "result.json").read_text())["status"] == "failed"
+
+
+def test_fault_check_rejects_cleanup_errors_even_with_empty_terminal_ownership(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(recipes, "check_inputs", lambda _: {})
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+    output = tmp_path / "fault"
+
+    def inject(*_args):
+        (output / "run").mkdir()
+        (output / "run/evidence.json").write_text("{}")
+        raise subprocess.CalledProcessError(1, ["injected"])
+
+    report = {
+        "state": "failed", "error": "Recipe acceptance: injected trainer exception",
+        "cleanup": {"state": "completed_with_errors",
+                    "work_lifecycle": {"resident_outputs": 0, "resident_bytes": 0}},
+    }
+    monkeypatch.setattr(recipes, "execute", inject)
+    monkeypatch.setattr("aspec.reporting.build_run_report", lambda _: report)
+    with pytest.raises(ValueError, match="cleanup did not complete"):
+        recipes.fault_check("shared-target", "fail", output)
+    assert json.loads((output / "result.json").read_text())["status"] == "failed"
+
+
+@pytest.mark.parametrize("managed,devices", [(False, "0,1,2,3"), (True, "0,1,2,3,4,5,6,7")])
+def test_fault_entry_uses_role_gpu_budget_and_forwards_target_settings(tmp_path, monkeypatch, managed, devices):
+    class ReachedExecution(Exception):
+        pass
+
+    commands = []
+
+    def capture(command, *_):
+        commands.append([str(value) for value in command])
+        raise ReachedExecution()
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", devices)
+    monkeypatch.setattr(recipes, "check_inputs", lambda _: {})
+    monkeypatch.setattr(recipes, "execute", capture)
+    overrides = ["inference.target_service.address=http://127.0.0.1:30001"]
+    if managed:
+        overrides += ["inference.target_service.mode=managed-local",
+                      "inference.target_service.python_executable=/target/bin/python"]
+    with pytest.raises(ReachedExecution):
+        recipes.fault_check("shared-target", "fail", tmp_path / "run", overrides=overrides)
+    assert all(value in commands[0] for value in overrides)
+
+
+def test_acceptance_uses_normal_role_startup_instead_of_reserving_total_gpus(tmp_path, monkeypatch):
+    import sys
+    from unittest.mock import Mock
+
+    from aspec import train_entry
+    from aspec.commands import _recipe_smoke
+
+    # Eight GPUs in the workload means four per role, not eight in Draft's Ray.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+    monkeypatch.setattr(sys, "argv", ["smoke", "--config", "unused.yaml", "--output",
+                                     str(tmp_path / "run"), "--gpus", "8"])
+    start = Mock()
+    monkeypatch.setattr(train_entry, "main", start)
+    monkeypatch.setattr(_recipe_smoke.ray, "init", lambda **_: pytest.fail("eager Ray initialization"))
+    monkeypatch.setattr(_recipe_smoke.ray, "shutdown", Mock())
+    _recipe_smoke.main()
+    start.assert_called_once_with()
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_long_capacity_samples_target_and_draft_allocations(tmp_path, monkeypatch, managed):
+    from unittest.mock import Mock
+
+    from omegaconf import OmegaConf
+
+    from aspec.commands import _recipe_capacity
+    from aspec.commands import recipes as command_module
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7" if managed else "6,7")
+    monkeypatch.setattr("aspec.utils.misc.get_current_node_ip", lambda: "local")
+    monkeypatch.setattr("aspec.inference.service_protocol.request", lambda *_a, **_k: {
+        "node_ip": "local", "devices": list(range(6)), "draining": False, "engines": {},
+    })
+    commands = []
+
+    def monitor(command, stdout, **_kwargs):
+        commands.append(command)
+        selected = next(value.removeprefix("--id=") for value in command if value.startswith("--id="))
+        stdout.write("index, uuid, memory.used [MiB], memory.total [MiB]\n")
+        for gpu in selected.split(","):
+            for _ in range(2):
+                stdout.write(f"{gpu}, GPU-{gpu}, 10 MiB, 100 MiB\n")
+        stdout.flush()
+        return Mock()
+
+    monkeypatch.setattr(recipes.subprocess, "Popen", monitor)
+    monkeypatch.setattr(command_module, "execute", lambda *_a, **_k: None)
+    monkeypatch.setattr(command_module, "audit_run", lambda *_a, **_k: [""])
+    monkeypatch.setattr(command_module, "export_asset", lambda *_a, **_k: None)
+    monkeypatch.setattr(_recipe_capacity, "audit_long_run", lambda *_: {})
+    config = OmegaConf.create({"inference": {"target_service": {
+        "mode": "managed-local" if managed else "external",
+    }}})
+    output = tmp_path / "run"
+    recipes.run_acceptance("qwen27b-long", recipes.catalog()["qwen27b-long"], output, 8,
+                           inputs={}, prepared_config=config)
+    result = json.loads((output / "acceptance.json").read_text())
+    assert result["status"] == "passed" and len(result["capacity"]["devices"]) == 8
+    selected = next(value.removeprefix("--id=") for value in commands[0] if value.startswith("--id="))
+    assert set(selected.split(",")) == set(map(str, range(8)))
 
 
 @pytest.mark.parametrize("action", ["fail", "slow"])
@@ -225,7 +334,7 @@ def test_fault_cli_dispatches_selected_action(action, tmp_path, monkeypatch):
         sys, "argv", ["recipes", "fault-check", "multinode", "--action", action, "--output", output]
     )
     recipes.main()
-    invoked.assert_called_once_with("multinode", action, output)
+    invoked.assert_called_once_with("multinode", action, output, overrides=[])
 
 
 def test_primary_dspark_release_uses_fa4_packing():
@@ -281,3 +390,32 @@ def test_resume_audit_compares_saved_scheduler_state(tmp_path, monkeypatch, sche
         message = "LR scheduler" if not scheduler_matches else "Checkpoint state/RNG"
         with pytest.raises(ValueError, match=message):
             recipes.audit_run(resumed, 8, resumed=True, expected_ranks=1)
+
+
+def test_shared_acceptance_resumes_effective_experiments(tmp_path, monkeypatch):
+    from aspec.commands import recipes as command
+
+    experiments = [{"name": "renamed_a", "training": {"lr": 0.007}}, {"name": "renamed_b"}]
+    override = "experiments=" + json.dumps(experiments)
+    runs = []
+
+    def execute(argv, _log):
+        if "aspec.commands._recipe_smoke" not in argv:
+            return
+        run = argv[argv.index("--output") + 1]
+        config = OmegaConf.merge(OmegaConf.load(argv[argv.index("--config") + 1]),
+                                 OmegaConf.from_dotlist(argv[argv.index("--gpus") + 2:]))
+        run.mkdir()
+        OmegaConf.save(config, run / "config.yaml")
+        runs.append(OmegaConf.to_container(config.experiments))
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
+    monkeypatch.setattr(command, "execute", execute)
+    monkeypatch.setattr(command, "audit_run", lambda *_a, **_kw: [])
+    output = tmp_path / "run"
+    command.run_acceptance("shared-target", command.catalog()["shared-target"], output, 4,
+                           inputs={}, overrides=[override])
+    assert runs[0] == experiments
+    for original, resumed in zip(experiments, runs[1], strict=True):
+        checkpoint = output / "stage-1/first" / original["name"] / "checkpoints"
+        assert resumed == {**original, "training": {**original.get("training", {}), "load_path": str(checkpoint)}}

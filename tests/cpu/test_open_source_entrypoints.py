@@ -67,6 +67,19 @@ def test_unknown_wheel_changes_are_not_overwritten(wheel):
     assert file.read_text() == "value = 99\n"
 
 
+@pytest.mark.parametrize("check", [False, True])
+def test_missing_target_runtime_never_triggers_dependency_install(monkeypatch, check):
+    def missing(**kwargs):
+        raise importlib.metadata.PackageNotFoundError("sglang")
+
+    monkeypatch.setattr(patcher, "installed_site", missing)
+    monkeypatch.setattr(patcher.subprocess, "run", lambda *a, **k: pytest.fail("must not install"))
+    monkeypatch.setattr(sys, "argv", ["patch", *(["--check"] if check else [])])
+    with pytest.raises(SystemExit) as error:
+        patcher.main()
+    assert error.value.code == 1
+
+
 def test_patch_check_works_inside_an_unrelated_git_checkout(wheel):
     site, file, patch = wheel
     subprocess.run(["git", "init", "-q", str(site.parent)], check=True)
@@ -162,7 +175,7 @@ def test_doctor_reports_system_site_packages_even_when_versions_match(tmp_path, 
 
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
     (tmp_path / "pyvenv.cfg").write_text("include-system-site-packages = true\n")
-    monkeypatch.setattr(doctor, "expected_versions", lambda: {})
+    monkeypatch.setattr(doctor, "expected_versions", lambda target=False: {})
     monkeypatch.setattr(doctor, "installed_site", lambda: tmp_path)
     monkeypatch.setattr(doctor, "patch_state", lambda _: "patched")
     result = doctor.inspect_environment()

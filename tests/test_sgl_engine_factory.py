@@ -23,7 +23,7 @@
 # Adapted from TorchSpec 6c042a87140a84d13839e341ece2c5c3ada918bc:
 # tests/test_sgl_engine_factory.py. Namespace bindings and ASpec regression coverage adapted.
 
-"""Tests for SGLang engine factory: topology, dist_init_addr negotiation, and tp_size validation."""
+"""Tests for SGLang engine factory: node-local engine allocation and tp_size validation."""
 
 import asyncio
 import os
@@ -52,7 +52,6 @@ def _make_args(**overrides):
         inference_num_gpus_per_engine=8,
         inference_num_gpus_per_node=8,
         sglang_nnodes=1,
-        sglang_dist_init_addr=None,
         sglang_init_timeout=10,
         sglang_tp_size=None,
         sglang_pp_size=1,
@@ -124,23 +123,19 @@ def _build_mock_ray_infrastructure():
 class TestSglEngineTopology:
     """Test engine count, replica count, and node_rank assignment."""
 
-    def _call(self, args, pg, mooncake_config=None, ray_get_side_effect=None):
+    def _call(self, args, pg, mooncake_config=None):
         engines, init_calls, mock_ray_remote = _build_mock_ray_infrastructure()
 
         with (
             patch("aspec.inference.factory.ray") as mock_ray,
             patch("aspec.inference.factory.get_aspec_env_vars", return_value={}),
-            patch("aspec.inference.factory._alive_worker_engines", []) as alive_workers,
         ):
+            mock_ray.get_runtime_context.return_value.get_node_id.return_value = "ab" * 28
             mock_ray.remote.side_effect = mock_ray_remote
             next_port = 10000
 
             def mock_ray_get(refs, **kwargs):
                 nonlocal next_port
-                if ray_get_side_effect is not None:
-                    result = ray_get_side_effect(refs, **kwargs)
-                    if result is not None:
-                        return result
                 if isinstance(refs, list):
                     return None
                 result = next_port
@@ -153,7 +148,7 @@ class TestSglEngineTopology:
 
             result = _init_sgl_engines(args, pg, mooncake_config)
 
-        return result, engines, init_calls, alive_workers
+        return result, engines, init_calls
 
     # -- Single-node cases --------------------------------------------------
 
@@ -170,13 +165,11 @@ class TestSglEngineTopology:
         args = _make_args(inference_num_gpus=8, inference_num_gpus_per_engine=2)
         pg = _make_pg(8)
 
-        result, engines, init_calls, _ = self._call(args, pg)
+        result, engines, init_calls = self._call(args, pg)
 
         assert len(engines) == 4
         assert len(result) == 4
-        # All node_rank == 0
-        for e in engines:
-            assert e._constructor_kwargs["node_rank"] == 0
+        assert [e for e, _ in init_calls] == result == engines
 
     def test_single_node_1_engine(self):
         """8 GPUs, 8 GPUs/engine → 1 engine."""
@@ -189,192 +182,23 @@ class TestSglEngineTopology:
         assert len(result) == 1
 
     def test_single_node_gpu_ids(self):
-        """base_gpu_id should be bundle_offset = i * gpus_per_engine."""
+        """A remote service owns allocation; Draft needs no inference PG."""
         args = _make_args(inference_num_gpus=8, inference_num_gpus_per_engine=2)
-        pg = _make_pg(8)
-
-        _, engines, *_ = self._call(args, pg)
+        _, engines, *_ = self._call(args, None)
 
         for i, e in enumerate(engines):
-            assert e._constructor_kwargs["base_gpu_id"] == i * 2
+            assert "base_gpu_id" not in e._constructor_kwargs
+            assert e._constructor_kwargs["num_gpus_per_engine"] == 2
 
     def test_single_node_no_dist_init_addr(self):
         """Single-node engines should NOT receive dist_init_addr."""
         args = _make_args(inference_num_gpus=8, inference_num_gpus_per_engine=2)
         pg = _make_pg(8)
 
-        _, _, init_calls, _ = self._call(args, pg)
+        _, _, init_calls = self._call(args, pg)
 
         for _, kw in init_calls:
-            assert kw["dist_init_addr"] is None
-
-    # -- Multi-node, single replica -----------------------------------------
-
-    def test_multi_node_single_replica_topology(self):
-        """3 nodes × 8 GPUs = 24 total, 1 replica → 3 engines, 1 head + 2 workers."""
-        args = _make_args(
-            inference_num_gpus=24,
-            inference_num_gpus_per_node=8,
-            sglang_nnodes=3,
-        )
-        pg = _make_pg(24)
-
-        def ray_get_side_effect(refs, **kw):
-            if isinstance(refs, list) and len(refs) == 2:
-                return ("10.0.0.1", 12345)
-            return None
-
-        result, engines, init_calls, alive_workers = self._call(
-            args, pg, ray_get_side_effect=ray_get_side_effect
-        )
-
-        assert len(engines) == 3
-        assert len(result) == 1  # only head
-        assert len(alive_workers) == 2  # 2 workers stored
-
-        # node_rank assignment: 0, 1, 2
-        for i, e in enumerate(engines):
-            assert e._constructor_kwargs["node_rank"] == i
-
-    def test_multi_node_dist_init_addr_negotiated(self):
-        """Multi-node auto-negotiation calls get_node_ip + find_free_port on head engine."""
-        args = _make_args(
-            inference_num_gpus=24,
-            inference_num_gpus_per_node=8,
-            sglang_nnodes=3,
-        )
-        pg = _make_pg(24)
-
-        def ray_get_side_effect(refs, **kw):
-            if isinstance(refs, list) and len(refs) == 2:
-                return ("10.0.0.1", 12345)
-            return None
-
-        _, engines, init_calls, _ = self._call(args, pg, ray_get_side_effect=ray_get_side_effect)
-
-        # The head negotiates the distributed address, and every engine also
-        # pre-allocates a consecutive port pair before initialization.
-        engines[0].get_node_ip.remote.assert_called_once()
-        assert engines[0].find_free_port.remote.call_count == 2
-
-        # All 3 engines should receive the same dist_init_addr
-        for _, kw in init_calls:
-            assert kw["dist_init_addr"] == "10.0.0.1:12345"
-
-    def test_multi_node_configured_addr_override(self):
-        """When sglang_dist_init_addr is set and single replica, use it directly."""
-        args = _make_args(
-            inference_num_gpus=24,
-            inference_num_gpus_per_node=8,
-            sglang_nnodes=3,
-            sglang_dist_init_addr="192.168.1.1:9999",
-        )
-        pg = _make_pg(24)
-
-        _, engines, init_calls, _ = self._call(args, pg)
-
-        # A configured distributed address skips address negotiation, while
-        # per-engine port pre-allocation still happens.
-        engines[0].get_node_ip.remote.assert_not_called()
-        engines[0].find_free_port.remote.assert_called_once()
-
-        # All engines get the configured addr
-        for _, kw in init_calls:
-            assert kw["dist_init_addr"] == "192.168.1.1:9999"
-
-    # -- Multi-node, multiple replicas --------------------------------------
-
-    def test_multi_node_multi_replica_topology(self):
-        """2 replicas × 3 nodes × 8 GPUs = 48 total → 6 engines, 2 heads + 4 workers."""
-        args = _make_args(
-            inference_num_gpus=48,
-            inference_num_gpus_per_node=8,
-            sglang_nnodes=3,
-        )
-        pg = _make_pg(48)
-
-        call_count = [0]
-
-        def ray_get_side_effect(refs, **kw):
-            if isinstance(refs, list) and len(refs) == 2:
-                call_count[0] += 1
-                return (f"10.0.{call_count[0]}.1", 10000 + call_count[0])
-            return None
-
-        result, engines, init_calls, alive_workers = self._call(
-            args, pg, ray_get_side_effect=ray_get_side_effect
-        )
-
-        assert len(engines) == 6
-        assert len(result) == 2  # 2 heads
-        assert len(alive_workers) == 4  # 4 workers
-
-        # node_rank pattern: [0,1,2, 0,1,2]
-        expected_node_ranks = [0, 1, 2, 0, 1, 2]
-        for i, e in enumerate(engines):
-            assert e._constructor_kwargs["node_rank"] == expected_node_ranks[i]
-
-    def test_multi_node_multi_replica_per_replica_addr(self):
-        """Each replica gets its own dist_init_addr."""
-        args = _make_args(
-            inference_num_gpus=48,
-            inference_num_gpus_per_node=8,
-            sglang_nnodes=3,
-        )
-        pg = _make_pg(48)
-
-        call_count = [0]
-
-        def ray_get_side_effect(refs, **kw):
-            if isinstance(refs, list) and len(refs) == 2:
-                call_count[0] += 1
-                return (f"10.0.{call_count[0]}.1", 10000 + call_count[0])
-            return None
-
-        _, engines, init_calls, _ = self._call(args, pg, ray_get_side_effect=ray_get_side_effect)
-
-        # Negotiation called on engine[0] (replica 0 head) and engine[3] (replica 1 head)
-        engines[0].get_node_ip.remote.assert_called_once()
-        engines[3].get_node_ip.remote.assert_called_once()
-        # Worker engines should NOT be used for negotiation
-        for idx in [1, 2, 4, 5]:
-            engines[idx].get_node_ip.remote.assert_not_called()
-
-        # Replica 0 engines (0,1,2) get addr from first negotiation
-        # Replica 1 engines (3,4,5) get addr from second negotiation
-        for i in range(3):
-            assert init_calls[i][1]["dist_init_addr"] == "10.0.1.1:10001"
-        for i in range(3, 6):
-            assert init_calls[i][1]["dist_init_addr"] == "10.0.2.1:10002"
-
-    def test_multi_node_multi_replica_configured_addr_ignored(self):
-        """With multiple replicas, configured addr is ignored (auto-negotiate each)."""
-        args = _make_args(
-            inference_num_gpus=48,
-            inference_num_gpus_per_node=8,
-            sglang_nnodes=3,
-            sglang_dist_init_addr="192.168.1.1:9999",
-        )
-        pg = _make_pg(48)
-
-        call_count = [0]
-
-        def ray_get_side_effect(refs, **kw):
-            if isinstance(refs, list) and len(refs) == 2:
-                call_count[0] += 1
-                return (f"10.0.{call_count[0]}.1", 10000 + call_count[0])
-            return None
-
-        _, engines, init_calls, _ = self._call(args, pg, ray_get_side_effect=ray_get_side_effect)
-
-        # Should auto-negotiate despite configured_addr, because num_replicas > 1
-        engines[0].get_node_ip.remote.assert_called_once()
-        engines[3].get_node_ip.remote.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# tp_size / pp_size validation in SglEngine.init()
-# ---------------------------------------------------------------------------
+            assert "dist_init_addr" not in kw
 
 
 class TestSglEngineTpSizeValidation:
@@ -437,17 +261,10 @@ class TestSglEngineTpSizeValidation:
         self._init_engine(engine)
         assert os.environ["SGLANG_SPEC_TRAINING_PACKAGE"] == "aspec"
 
-    def test_tp_size_correct_multi_node(self):
-        """sglang_tp_size=24, nnodes=3, gpus_per_engine=8 → OK, tp_size=24 passed to sgl.Engine."""
-        engine = self._make_engine(
-            num_gpus_per_engine=8,
-            sglang_tp_size=24,
-            sglang_nnodes=3,
-        )
-        mock_sgl = self._init_engine(engine)
-        kwargs = mock_sgl.Engine.call_args[1]
-        assert kwargs["tp_size"] == 24
-        assert kwargs["nnodes"] == 3
+    @pytest.mark.parametrize("nnodes,node_rank", [(2, 0), (1, 1)])
+    def test_engine_rejects_cross_node_tp_before_init(self, nnodes, node_rank):
+        with pytest.raises(ValueError, match="node-local"):
+            self._make_engine(sglang_nnodes=nnodes, node_rank=node_rank)
 
     def test_tp_size_wrong_single_node(self):
         """sglang_tp_size=4 with gpus_per_engine=8 must fail closed."""
@@ -459,26 +276,10 @@ class TestSglEngineTpSizeValidation:
         with pytest.raises(ValueError, match="sglang_tp_size"):
             self._init_engine(engine)
 
-    def test_tp_size_wrong_multi_node(self):
-        """sglang_tp_size=8 with nnodes=3, gpus_per_engine=8 → should be 24."""
-        engine = self._make_engine(
-            num_gpus_per_engine=8,
-            sglang_tp_size=8,
-            sglang_nnodes=3,
-        )
-        with pytest.raises(ValueError, match="sglang_tp_size.*8.*must equal.*24"):
-            self._init_engine(engine)
-
     def test_tp_size_defaults_when_not_configured(self):
-        """When sglang_tp_size is None, no assertion, tp_size = nnodes * gpus_per_engine."""
-        engine = self._make_engine(
-            num_gpus_per_engine=8,
-            sglang_tp_size=None,
-            sglang_nnodes=3,
-        )
+        engine = self._make_engine(num_gpus_per_engine=8, sglang_tp_size=None)
         mock_sgl = self._init_engine(engine)
-        kwargs = mock_sgl.Engine.call_args[1]
-        assert kwargs["tp_size"] == 24  # 3 * 8
+        assert mock_sgl.Engine.call_args.kwargs["tp_size"] == 8
 
     def test_output_metadata_is_validated_and_carries_contract_identity(self):
         contract = build_target_feature_contract(

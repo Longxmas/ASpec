@@ -390,6 +390,10 @@ def _validate_cluster_config(config: DictConfig) -> None:
         raise ValueError(
             "mooncake.feature_affinity must be 'any' or 'node_local_required'"
         )
+    if config.inference.inference_engine_type == "sgl" or mode == "static_multi_node":
+        from aspec.inference.service_protocol import validate_target_tp
+
+        validate_target_tp(config.inference.sglang.nnodes)
     if mode == "single_node":
         if feature_affinity == "node_local_required":
             raise ValueError(
@@ -462,11 +466,6 @@ def _validate_cluster_config(config: DictConfig) -> None:
     if len(set(role_ips["training"]) | set(role_ips["inference"])) < 2:
         raise ValueError("static_multi_node requires at least two distinct node IPs")
 
-    if config.inference.sglang.nnodes != 1:
-        raise ValueError(
-            "static_multi_node first release keeps every Target TP group node-local; "
-            "inference.sglang.nnodes must be 1"
-        )
     if (
         config.inference.inference_num_gpus_per_engine
         > config.inference.inference_num_gpus_per_node
@@ -1006,6 +1005,21 @@ def load_config(
         configs_to_merge.append(cli_config)
 
     config = OmegaConf.merge(*configs_to_merge)
+    from aspec.inference.service_protocol import validate_address
+
+    service = config.inference.target_service
+    validate_address(service.address)
+    for address in service.addresses.values():
+        validate_address(address)
+    if service.mode not in ("external", "managed-local"):
+        raise ValueError("inference.target_service.mode must be external or managed-local")
+    if service.mode == "managed-local":
+        if config.cluster.mode != "single_node":
+            raise ValueError("managed-local requires a single-node training run")
+        if not service.python_executable or not Path(service.python_executable).is_absolute():
+            raise ValueError("managed-local requires an absolute target_service.python_executable")
+    elif service.python_executable is not None:
+        raise ValueError("Target Python is configured only for managed-local supervision")
     _resolve_relative_paths(config, os.getcwd())
 
     _validate_current_scope(config)

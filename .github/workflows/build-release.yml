@@ -1,6 +1,7 @@
-name: Build release
+name: Build and publish release
 
 on:
+  workflow_dispatch:
   push:
     tags: ["v*"]
 
@@ -16,6 +17,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Verify tag matches package version
+        if: github.event_name == 'push'
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
@@ -37,9 +39,11 @@ jobs:
           source "$RUNNER_TEMP/aspec-build-venv/bin/activate"
           echo "$VIRTUAL_ENV/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=$VIRTUAL_ENV" >> "$GITHUB_ENV"
-          python -m pip install --upgrade pip build
+          python -m pip install --upgrade pip build twine
       - name: Build source and wheel distributions
         run: python -m tools.build_release --outdir dist
+      - name: Check PyPI distribution metadata
+        run: python -m twine check --strict dist/*.whl dist/*.tar.gz
       - name: Save audited distributions and runtime requirements
         uses: actions/upload-artifact@v7
         with:
@@ -73,10 +77,46 @@ jobs:
           python -m pip install -r requirements/ci-cpu.txt
           # Deliberately test the wheel and patch CLI with a CPU dependency subset.
           # This is not installation/acceptance of the production GPU runtime.
-          python -m pip install --no-deps dist/*.whl sglang==0.5.21
+          python -m pip install --no-deps dist/ling_aspec_runtime-*.whl sglang==0.5.21
       - name: Exercise installed commands outside the checkout
         env:
           CUDA_VISIBLE_DEVICES: ""
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: python tools/check_wheel_install.py
+
+  publish:
+    needs: [build, wheel-install]
+    if: >-
+      github.repository == 'inclusionAI/ASpec' &&
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ling-aspec/
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: aspec-distributions
+          path: dist/
+      - name: Verify distribution checksums
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+      - name: Select audited Python distributions
+        run: |
+          mkdir pypi-dist
+          cp dist/*.whl dist/*.tar.gz pypi-dist/
+      - name: Require PyPI API token
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$PYPI_API_TOKEN" ]; then
+            echo "::error::Set PYPI_API_TOKEN in the repository's pypi environment secrets."
+            exit 1
+          fi
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: pypi-dist/
+          attestations: false

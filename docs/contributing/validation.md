@@ -34,12 +34,13 @@ cleanup. It does not certify unreturning CUDA/RDMA operations, forced driver los
 ## Bounded GPU training, recovery and native assets
 
 Activate the installed venv, use the documented environment wrapper, and select only GPUs allocated
-to this task. The launcher requires an explicit GPU list of the catalog size for single-node checks.
-For example, Quickstart needs no external data:
+to this task. Start Target separately as described in [installation](../user-guide/installation.md)
+and select only the catalog's Draft GPUs in the training shell. Managed-local instead takes the
+combined Target/Draft list. For example, with Target already running on GPU 0:
 
 ```bash
 export ASPEC_TARGET_MODEL=/models/Qwen3-8B
-CUDA_VISIBLE_DEVICES=0,1 bash tools/run_in_env.sh python -m tools.recipes accept quickstart \
+CUDA_VISIBLE_DEVICES=1 bash tools/run_in_env.sh python -m tools.recipes accept quickstart \
   --output outputs/acceptance/quickstart-001
 ```
 
@@ -120,9 +121,9 @@ It checks the CP2 FA4 operator, not full 256K model quality or capacity.
 Shared-reader and multi-node trainer exceptions have a scripted entry:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash tools/run_in_env.sh \
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/run_in_env.sh \
   python -m tools.recipes fault-check shared-target --action fail --output outputs/acceptance/shared-fail-001
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 bash tools/run_in_env.sh \
+CUDA_VISIBLE_DEVICES=0,1,2,3 bash tools/run_in_env.sh \
   python -m tools.recipes fault-check shared-target --action slow --output outputs/acceptance/shared-slow-001
 # With the dedicated cluster prepared, select a fresh node-local output path:
 bash tools/run_in_env.sh python -m tools.recipes fault-check multinode --action fail \
@@ -130,7 +131,9 @@ bash tools/run_in_env.sh python -m tools.recipes fault-check multinode --action 
 ```
 
 The scripts verify that injection actually occurred, the expected exit status, canonical terminal
-state and empty terminal ownership; slow-reader mode requires healthy completion. A startup failure
+state and empty terminal ownership. These examples use an independently started Target;
+`fault-check --set inference.target_service.address=http://host:port` selects its address.
+Slow-reader mode requires healthy completion. A startup failure
 cannot pass as fault acceptance. This scoped injection is a Python trainer exception/slow consumer,
 not loss of a physical node or an unreturning native/CUDA call. Test those mechanisms separately.
 Use the last complete checkpoint to resume into a fresh output after failure, then run the

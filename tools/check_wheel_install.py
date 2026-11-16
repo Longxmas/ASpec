@@ -44,12 +44,13 @@ def check_install():
             return result.stdout
 
         observed = json.loads(run([sys.executable, "-I", "-c", """
-import importlib.util,json,sys
+import importlib.metadata,importlib.util,json,sys
 from pathlib import Path
 import aspec
 from aspec.assets import asset_path
 from aspec.evidence import _source_identity
 from aspec.compat.sglang_patch import PATCH
+from aspec.commands.convert_to_hf import _aspec_version
 prefix=Path(sys.prefix)
 assert Path(aspec.__file__).is_relative_to(prefix),aspec.__file__
 assert importlib.util.find_spec('tools') is None
@@ -57,14 +58,16 @@ assert PATCH.is_file() and PATCH.is_relative_to(prefix)
 assert asset_path('requirements/sglang-v0.5.21.txt').is_relative_to(prefix)
 identity=_source_identity()
 assert identity['revision'] is None and identity['dirty'] is None
-assert identity['source_file_count'] > 0 and identity['version']
+assert identity['source_file_count'] > 0
+assert identity['version'] == importlib.metadata.version('ling-aspec-runtime')
+assert _aspec_version() == identity['version']
 assert identity['build'] is not None
 spec=importlib.util.find_spec('sglang')
 assert Path(spec.origin).is_relative_to(prefix)
 print(json.dumps({'sglang':str(Path(spec.origin).parent),'identity':identity}))
 """]))
         run([cli, "--help"], contains="patch-sglang")
-        for command in ("doctor", "patch-sglang", "recipes", "quickstart", "export",
+        for command in ("doctor", "target", "patch-sglang", "recipes", "quickstart", "export",
                         "stitch-mtp", "evaluate", "prepare-data", "prepare-target-data",
                         "select-answers", "convert-data"):
             run([cli, command, "--help"], contains="usage:")
@@ -83,6 +86,9 @@ print(json.dumps({'sglang':str(Path(spec.origin).parent),'identity':identity}))
         doctor = json.loads(run([cli, "doctor", "--json"], expected=1))
         if doctor["ok"] or not doctor["checks"] or doctor["gpu_requested"]:
             raise RuntimeError("CPU fixture must not claim full runtime readiness")
+        target_doctor = json.loads(run([cli, "doctor", "--target", "--json"], expected=1))
+        if not target_doctor["target_requested"]:
+            raise RuntimeError("Target doctor must require the Target runtime")
         package = Path(observed["sglang"])
 
         def hashes():
