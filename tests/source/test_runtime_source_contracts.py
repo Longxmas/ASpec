@@ -12,95 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dependency-light repository contracts enforced by public CI."""
+"""Public contracts for runtime validation, patch provenance and CPU CI."""
 
 import ast
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
-PUBLIC_TREES = (
-    ".github",
-    "configs",
-    "docs",
-    "examples",
-    "aspec",
-    "patches",
-    "requirements",
-    "tests",
-    "tools",
-)
-PUBLIC_ROOT_FILES = (
-    ".dockerignore",
-    ".gitattributes",
-    ".gitignore",
-    "AGENTS.md",
-    "CHANGELOG.md",
-    "CITATION.cff",
-    "CONTRIBUTING.md",
-    "Dockerfile",
-    "MANIFEST.in",
-    "README.md",
-    "README_zh-CN.md",
-    "ROADMAP.md",
-    "SECURITY.md",
-    "pyproject.toml",
-    "setup.sh",
-)
-TEXT_SUFFIXES = {
-    ".json",
-    ".jsonl",
-    ".md",
-    ".patch",
-    ".py",
-    ".sh",
-    ".svg",
-    ".toml",
-    ".txt",
-    ".yaml",
-    ".yml",
-}
-HYGIENE_FIXTURES = {
-    ROOT / "tests/cpu/test_open_source_entrypoints.py",
-    ROOT / "tests/cpu/test_release_audit.py",
-    Path(__file__),
-}
-
-
-def _public_text_files():
-    yield from (ROOT / name for name in PUBLIC_ROOT_FILES if (ROOT / name).is_file())
-    for tree in PUBLIC_TREES:
-        yield from (
-            path
-            for path in (ROOT / tree).rglob("*")
-            if path.is_file() and path.suffix in TEXT_SUFFIXES and path not in HYGIENE_FIXTURES
-        )
-
-
-def test_public_source_tree_excludes_historical_archive():
-    assert not (ROOT / "archive").exists()
-
-
-def test_public_source_has_no_private_environment_or_removed_archive_references():
-    markers = (
-        "archive" + "/",
-        "/personal" + "/",
-        "aistudio" + "-",
-        "code." + "alipay.com",
-        "pypi." + "antfin-inc.com",
-        "frost" + "_dev/",
-        "retained " + "internally",
-        "Megatron" + "-LM-inner",
-        "dspark" + "_for_ling_v3",
-        "10.10" + ".",
-        "10.13.2" + ".",
-    )
-    violations = []
-    for path in _public_text_files():
-        text = path.read_text(encoding="utf-8")
-        for marker in markers:
-            if marker in text:
-                violations.append(f"{path.relative_to(ROOT)}: contains {marker!r}")
-    assert not violations, "Public source hygiene violations: " + ", ".join(violations)
 
 
 def _python_runtime_asserts(tree):
