@@ -246,6 +246,8 @@ class TrainingConfig:
     dflash2_selector_loss_alpha: float = 1.0
 
     # DSpark-specific parameters (used by DSpark trainer only)
+    # Precision of the frozen Draft LM head during training (SM90 FP8, CP1).
+    dspark_lm_head_precision: str = "bf16"
     dspark_num_anchors: int = 512
     dspark_num_target_layers: int = 5
     dspark_loss_decay_gamma: float = 4.0

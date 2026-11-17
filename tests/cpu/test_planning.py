@@ -57,6 +57,42 @@ def _local_qwen_target(tmp_path, *, max_position_embeddings=262144):
     return target
 
 
+@pytest.mark.parametrize("precision", ["bf16", "fp8"])
+def test_dspark_head_precision_reaches_trainer_and_resume(precision):
+    from aspec.training.checkpoint import (
+        _logical_training_topology,
+        _validate_exact_resume_topology,
+    )
+
+    plan = compile_execution_plan(_config(**{"training.dspark_lm_head_precision": precision}))
+    args = plan.to_runtime_args()
+    assert args.dspark_lm_head_precision == plan.workload.objective["lm_head_precision"] == precision
+    topology = _logical_training_topology(args, args.world_size)
+    metadata = {"world_size": args.world_size, "training_topology": topology}
+    assert topology["training_objective"]["lm_head_precision"] == precision
+    _validate_exact_resume_topology(args, metadata)
+    args.dspark_lm_head_precision = "bf16" if precision == "fp8" else "fp8"
+    with pytest.raises(RuntimeError, match="dspark_lm_head_precision"):
+        _validate_exact_resume_topology(args, metadata)
+    del topology["training_objective"]["lm_head_precision"]
+    args.dspark_lm_head_precision = "bf16"
+    _validate_exact_resume_topology(args, metadata)
+    args.dspark_lm_head_precision = "fp8"
+    with pytest.raises(RuntimeError, match="dspark_lm_head_precision"):
+        _validate_exact_resume_topology(args, metadata)
+
+
+@pytest.mark.parametrize("options", [
+    {"training.dspark_lm_head_precision": "int8"},
+    {"training.dspark_lm_head_precision": "fp8", "training.draft_context_parallel_size": 2},
+    {"training.dspark_lm_head_precision": "fp8", "training.compile_model": True},
+    {"training.dspark_lm_head_precision": "fp8", "model.draft_model_config": str(_DRAFT_CONFIG.with_name("dflash_draft_config.json"))},
+])
+def test_invalid_dspark_head_precision_is_rejected(options):
+    with pytest.raises(PlanCompileError, match="LM head|lm_head_precision"):
+        compile_execution_plan(_config(**options))
+
+
 def test_reference_config_compiles_deterministically():
     config = _config()
 

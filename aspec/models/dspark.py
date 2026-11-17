@@ -105,6 +105,7 @@ class DSparkModel(DFlashModel):
             anchor_seed=anchor_seed,
             anchor_sampling_scope=anchor_sampling_scope,
         )
+        self.fp8_lm_head = None  # Runtime cache bound after the frozen Target weights are loaded.
         self.ce_loss_alpha = float(ce_loss_alpha)
         self.l1_loss_alpha = float(l1_loss_alpha)
         self.confidence_head_alpha = float(confidence_head_alpha)
@@ -463,9 +464,7 @@ class DSparkModel(DFlashModel):
                     ).view(*teacher.shape[:-1], lm_head_weight.shape[0])
                     self.loss_head_cached_teacher_blocks_observed += counts[chunk]
                 hidden = values[0]
-                cached_draft = F.linear(
-                    hidden.reshape(-1, hidden.shape[-1]), lm_head_weight
-                ).view(*hidden.shape[:-1], lm_head_weight.shape[0])
+                cached_draft = self._project_draft(hidden, lm_head_weight)
                 self.loss_head_cached_draft_blocks_observed += counts[chunk]
             # One cache per original chunk and forward, never per model/step.
             # Keep only small FP32 L1 statistics across checkpoint replay; full
@@ -550,6 +549,16 @@ class DSparkModel(DFlashModel):
             (loss_numerator, local_den.detach()),
         )
 
+    def _project_draft(self, hidden, head_weight):
+        """Project Draft states; Target projections retain their own BF16 path."""
+        if self.training and self.fp8_lm_head is not None:
+            if head_weight is not self.fp8_lm_head.weight:
+                raise ValueError("FP8 LM head cache is bound to a different frozen weight")
+            return self.fp8_lm_head(hidden)
+        return F.linear(hidden.reshape(-1, hidden.shape[-1]), head_weight).view(
+            *hidden.shape[:-1], head_weight.shape[0]
+        )
+
     def _prediction_terms(self, hidden, target_ids, prev_ids, head_weight,
                           aligned_target_hidden, eval_mask, weights, cached_target_logits=None,
                           cached_draft_logits=None, cached_target_positions=None, loss_cache=None):
@@ -557,11 +566,8 @@ class DSparkModel(DFlashModel):
         # Explicit token-major GEMM: a block slice can be non-contiguous even
         # though the complete hidden stream is contiguous. Do not broadcast a
         # vocabulary projection over many tiny [block_size, hidden] matrices.
-        logits = cached_draft_logits if cached_draft_logits is not None else F.linear(
-            hidden.reshape(-1, hidden.shape[-1]), head_weight
-        ).view(
-            *hidden.shape[:-1], head_weight.shape[0]
-        )
+        logits = (cached_draft_logits if cached_draft_logits is not None
+                  else self._project_draft(hidden, head_weight))
         if self.draft_model.markov_head is not None:
             logits = self.draft_model.markov_head.apply_block_logits(logits, token_ids=prev_ids)
         vocab = logits.shape[-1]

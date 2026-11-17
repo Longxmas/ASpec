@@ -570,6 +570,8 @@ def run_native(args):
         compile_model=False, load_path=None, resume=None, checkpoint_dir=None,
         enable_perf_metrics=True, num_train_steps=args.warmup + args.steps,
     )
+    if namespace == "aspec":
+        config["dspark_lm_head_precision"] = args.dspark_lm_head_precision
     args.result.parent.mkdir(parents=True, exist_ok=True)
     args.initial.parent.mkdir(parents=True, exist_ok=True)
     if world_size > 1:
@@ -850,6 +852,7 @@ def main():
     )
     parser.add_argument("--features", type=Path)
     parser.add_argument("--framework", choices=("aspec", "torchspec", "angelspec"))
+    parser.add_argument("--dspark-lm-head-precision", choices=("bf16", "fp8"), default="bf16")
     parser.add_argument("--embedding-key", default="model.embed_tokens.weight")
     parser.add_argument("--attention-backend", choices=("cudnn_flex_attention", "fa4"), default="cudnn_flex_attention",
                         help="ASpec backend; native baselines keep their own FlexAttention backend.")
@@ -876,6 +879,8 @@ def main():
         help="Fail unless every ASpec Draft layer observes this Q/K preparation backend.",
     )
     args = parser.parse_args()
+    if args.dspark_lm_head_precision == "fp8" and (args.mode != "run" or args.framework != "aspec"):
+        parser.error("FP8 LM head requires run --framework aspec")
     required = {
         "data": ("source", "output"), "features": ("data", "output"),
         "run": ("features", "framework", "initial", "result"),

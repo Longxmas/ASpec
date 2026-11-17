@@ -79,6 +79,7 @@ def _logical_training_topology(args: Any, world_size: int) -> dict[str, Any]:
         fields = ("num_anchors", "num_target_layers", "loss_decay_gamma",
                   "ce_loss_alpha", "l1_loss_alpha")
         if prefix == "dspark":
+            topology["training_objective"]["lm_head_precision"] = getattr(args, "dspark_lm_head_precision", "bf16")
             fields += ("confidence_head_alpha",)
             for side in ("target", "draft"):
                 for name, default in (("temperature", 1.0), ("top_p", 1.0), ("top_k", -1)):
@@ -146,6 +147,8 @@ def _validate_exact_resume_topology(args: Any, metadata: dict[str, Any], *, chec
     current_topology = _logical_training_topology(args, current_world_size)
     if getattr(args, "draft_algorithm", None) == "dspark":
         saved_objective = (saved_topology or {}).get("training_objective") or {}
+        if saved_objective.get("lm_head_precision", "bf16") != getattr(args, "dspark_lm_head_precision", "bf16"):
+            raise RuntimeError("Exact resume cannot change dspark_lm_head_precision; use weights-only initialization")
         for side in ("target", "draft"):
             for name, default in (("temperature", 1.0), ("top_p", 1.0), ("top_k", -1)):
                 key = f"l1_{side}_{name}"

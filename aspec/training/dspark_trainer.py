@@ -67,6 +67,20 @@ class DSparkTrainer(DFlashTrainer):
     # Build hooks (override DFlashTrainer's defaults)
     # ------------------------------------------------------------------
 
+    def _init_target_lm_head(self, target_model_path):
+        super()._init_target_lm_head(target_model_path)
+        if getattr(self.args, "dspark_lm_head_precision", "bf16") == "fp8":
+            from aspec.models.ops.dspark_fp8_lm_head import FrozenFP8Head
+
+            self.dflash.fp8_lm_head = FrozenFP8Head(self.target_lm_head.lm_head.weight)
+
+    def get_feature_contract_status(self):
+        status = super().get_feature_contract_status()
+        cache = getattr(getattr(self, "dflash", None), "fp8_lm_head", None)
+        if cache is not None:
+            status["dspark_lm_head"] = {"training_precision": "fp8", "cache_bytes": cache.cache_bytes}
+        return status
+
     def _build_draft_model(self, config):
         if isinstance(config, K3DSparkConfig):
             return K3DSparkModel(config)

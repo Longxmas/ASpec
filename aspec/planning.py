@@ -277,6 +277,17 @@ def _load_draft_descriptor(config: DictConfig) -> dict[str, Any]:
             f"Draft architecture {architecture!r} is outside the current DSpark/DFlash/DFlash2/EAGLE3 scope"
         )
 
+    head_precision = _select(config, "training.dspark_lm_head_precision", "bf16")
+    if head_precision not in {"bf16", "fp8"}:
+        raise PlanCompileError("training.dspark_lm_head_precision must be 'bf16' or 'fp8'")
+    if head_precision == "fp8":
+        if family != "dspark" or _select(config, "training.draft_context_parallel_size", 1) != 1:
+            raise PlanCompileError("FP8 LM head training requires DSpark with CP1")
+        if _select(config, "training.compile_model", False):
+            raise PlanCompileError("FP8 LM head training requires compile_model=false")
+        if any(raw.get(f"{kind}_training_stage") == "indexer_warmup" for kind in ("csa", "qsa", "dsa")):
+            raise PlanCompileError("Indexer warmup does not run the FP8 LM head")
+
     if family == "mtp":
         from aspec.models.draft.mtp import NativeMTPConfig
 
@@ -1325,6 +1336,7 @@ def _workload(
             "loss_decay_gamma": _select(config, "training.dspark_loss_decay_gamma"),
             "ce_loss_alpha": _select(config, "training.dspark_ce_loss_alpha"),
             "l1_loss_alpha": _select(config, "training.dspark_l1_loss_alpha"),
+            "lm_head_precision": _select(config, "training.dspark_lm_head_precision", "bf16"),
             "confidence_head_alpha": _select(
                 config, "training.dspark_confidence_head_alpha"
             ),

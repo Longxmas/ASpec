@@ -47,6 +47,7 @@ training:
   warmup_ratio: 0.04
   dflash_block_size: 7
   dflash_packing: true
+  dspark_lm_head_precision: bf16  # Use fp8 on SM90 for Draft forward and dX.
   dspark_num_anchors: 512
   dspark_num_target_layers: 5
   dspark_loss_decay_gamma: 4.0
