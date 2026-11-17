@@ -55,6 +55,12 @@ aspec --config configs/recipes/qwen3_8b_eagle3.yaml --dry-run \
 TTT shifts, teacher halos and supervision remain document-local. Unsupported factorized/ambiguous
 heads fail export rather than producing an unfaithful serving asset.
 
+## P-EAGLE core prerequisite
+
+The [P-EAGLE model/loss API](peagle.md) provides a dense unsampled Qwen3 parallel
+Draft and forward-KL objective with independent numerical checks. Public training,
+COD sampling, recovery, export and consumer validation remain pending.
+
 ## EAGLE4: two stages
 
 The Draft stage trains the full recurrent model. The candidate stage freezes the entire Draft,

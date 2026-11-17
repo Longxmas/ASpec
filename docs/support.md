@@ -11,6 +11,7 @@ and tests do not imply CPU training support.
 | --- | --- | --- |
 | DSpark / DFlash | Training, exact recovery, evaluation and export; Dense and selected MoE/attention structures | Objectives, feature bindings and assets remain algorithm-specific |
 | EAGLE3 | Recurrent TTT, full/pruned vocabulary, GQA/MHA or materialized MLA; FA4 packing/CP | No EAGLE3 MoE, anchored mode or whole-model compile |
+| P-EAGLE core | Qwen3 full-vocabulary parallel model/loss, deterministic dense slots, eager/SDPA | Model/loss prerequisite only; no public trainer, COD sampler, resume, export or consumer validation; see [scope](user-guide/peagle.md) |
 | EAGLE4 | Dense and selected upstream MoE; Draft/candidate stages; packing/CP and native assets | Candidate Top-K forward-KL is explicitly implemented from public semantics, not an unpublished official recipe; no serving integration |
 | DFlash2 | Experimental full/causal/SWA training with Flex, cuDNN THD or FA4 packing/CP | Experimental objective; no claim to reproduce an official training recipe |
 | MTP-conditioned DSpark / DFlash | Frozen native Qwen3.5 predictor, token/hidden dual-anchor training, exact recovery and strict native assets | Dense full GQA, CP1, MBS1, REPLICATE, one node, non-packing, decay objective; no generic serving consumer |
