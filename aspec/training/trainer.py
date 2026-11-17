@@ -784,6 +784,7 @@ class Trainer(abc.ABC):
                 output.mooncake_key,
                 has_last_hidden_states="last_hidden_states" in shapes,
                 has_target="target" in shapes,
+                **({"has_mtp_hidden_states": True} if "mtp_hidden_states" in shapes else {}),
             )
         return len(outputs)
 

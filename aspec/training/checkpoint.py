@@ -813,7 +813,7 @@ def load_initial_draft_weights(
         transition = saved_conditioning is None
         if saved_conditioning is not None and saved_conditioning != conditioning:
             raise ValueError("MTP conditioning warmstart policy differs from the requested Draft")
-        if transition and any(key.startswith(("mtp_source.", "mtp_fusion.")) for key in tensors):
+        if transition and any(key.startswith(("mtp_source.", "mtp_fusion.", "mtp_binding.")) for key in tensors):
             raise ValueError("Plain Draft warmstart contains undeclared MTP tensors")
     if native:
         from aspec.draft_artifact import validate_native_asset
@@ -845,7 +845,7 @@ def load_initial_draft_weights(
         # and zero residual are absent from the predecessor. Everything else
         # still uses the ordinary strict loader.
         for key, value in draft_model.state_dict().items():
-            if key.startswith(("mtp_source.", "mtp_fusion.")):
+            if key.startswith(("mtp_source.", "mtp_fusion.", "mtp_binding.")):
                 if value.is_meta:
                     raise ValueError("Initialize the frozen MTP source before weights-only warmstart")
                 state[key] = value

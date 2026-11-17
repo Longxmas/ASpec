@@ -1146,12 +1146,17 @@ class DFlashDraftModel(PreTrainedModel):
 
         # Final norm
         self.final_norm = DFlashRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.mtp_fusion = self.mtp_source = None
+        self.mtp_fusion = self.mtp_source = self.mtp_binding = None
         if getattr(config, "mtp_conditioning", None):
             from aspec.models.dmtp import FrozenMTPFeatures, MTPAnchorFusion
 
             self.freeze_embedding()
-            self.mtp_source = FrozenMTPFeatures(config.mtp_conditioning["native_config"])
+            if config.mtp_conditioning.get("feature_source", "draft") == "draft":
+                self.mtp_source = FrozenMTPFeatures(config.mtp_conditioning["native_config"])
+            else:
+                from aspec.models.dmtp import FrozenMTPBinding
+
+                self.mtp_binding = FrozenMTPBinding(config.mtp_conditioning["native_config"])
             if config.mtp_conditioning["mode"] == "hidden":
                 self.mtp_fusion = MTPAnchorFusion(config.hidden_size, target_hidden_size,
                                                   eps=config.rms_norm_eps)
@@ -1166,10 +1171,12 @@ class DFlashDraftModel(PreTrainedModel):
     def initialize_mtp_conditioning(self, target_model_path):
         if self.mtp_source is not None:
             self.mtp_source.initialize_native_weights(target_model_path)
+        if self.mtp_binding is not None:
+            self.mtp_binding.initialize_native_weights(target_model_path)
 
     @torch.no_grad()
     def validate_mtp_binding(self, target_model_path, embedding_key):
-        if self.mtp_source is None:
+        if not getattr(self.config, "mtp_conditioning", None):
             return
         from transformers import AutoConfig
 
@@ -1191,7 +1198,10 @@ class DFlashDraftModel(PreTrainedModel):
             if not torch.equal(actual[start:start + 1024].cpu(),
                                expected[start:start + 1024].to(dtype=actual.dtype)):
                 raise ValueError("MTP conditioning frozen embedding differs from its Target")
-        self.mtp_source.validate_native_weights(target_model_path)
+        if self.mtp_source is not None:
+            self.mtp_source.validate_native_weights(target_model_path)
+        if self.mtp_binding is not None:
+            self.mtp_binding.validate_native_weights(target_model_path)
 
     def configure_dsa_trainable_parameters(self) -> None:
         layers = [layer.self_attn.dsa_layer for layer in self.layers

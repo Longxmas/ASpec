@@ -115,7 +115,7 @@ class OfflineReplayEngine(InferenceEngine, RayActor):
         key = str(uuid.uuid4())
         tensors = {
             name: record.get(name)
-            for name in ("input_ids", "hidden_states", "target", "last_hidden_states")
+            for name in ("input_ids", "hidden_states", "target", "last_hidden_states", "mtp_hidden_states")
         }
 
         # Dataset.load validated the recorded producer contract. Physical
@@ -150,12 +150,16 @@ class OfflineReplayEngine(InferenceEngine, RayActor):
             self._unpublished_keys.add(f"{key}_tgt")
         if tensors["last_hidden_states"] is not None:
             self._unpublished_keys.add(f"{key}_lhs")
+        if tensors["mtp_hidden_states"] is not None:
+            self._unpublished_keys.add(f"{key}_mhs")
         store_meta = self._mooncake_store.put(
             key=key,
             hidden_states=tensors["hidden_states"],
             input_ids=tensors["input_ids"],
             last_hidden_states=tensors["last_hidden_states"],
             target=tensors["target"],
+            **({"mtp_hidden_states": tensors["mtp_hidden_states"]}
+               if tensors["mtp_hidden_states"] is not None else {}),
         )
         return {
             "mooncake_key": key,

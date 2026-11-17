@@ -40,6 +40,7 @@ def calculate_eagle3_buffer_size(
     num_aux_layers: int = 3,
     include_last_hidden_states: bool = True,
     safety_margin: float = 1.1,
+    include_mtp_hidden_states: bool = False,
 ) -> int:
     """
     Calculate the required buffer size for receiving Eagle3 output tensors.
@@ -62,6 +63,8 @@ def calculate_eagle3_buffer_size(
     if include_last_hidden_states:
         last_hidden_states_size = batch_size * max_seq_len * hidden_dim * bfloat16_size
         total += last_hidden_states_size
+    if include_mtp_hidden_states:
+        total += batch_size * max_seq_len * hidden_dim * bfloat16_size
 
     total_with_margin = int(total * safety_margin)
 

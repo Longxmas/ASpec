@@ -42,6 +42,7 @@ class Eagle3TargetOutput:
     # Destination-ring lease for the strict P2P path. It is intentionally not
     # exposed as a model input and is released after the matching microstep.
     p2p_receive_lease: Optional[Any] = None
+    mtp_hidden_states: Optional[torch.Tensor] = None
 
     def to_tensor_dict(self) -> dict[str, torch.Tensor]:
         tensors = {
@@ -54,6 +55,8 @@ class Eagle3TargetOutput:
             tensors["target"] = self.target
         if self.last_hidden_states is not None:
             tensors["last_hidden_states"] = self.last_hidden_states
+        if self.mtp_hidden_states is not None:
+            tensors["mtp_hidden_states"] = self.mtp_hidden_states
         if self.input_ids_cpu is not None:
             tensors["input_ids_cpu"] = self.input_ids_cpu
         return tensors

@@ -1030,6 +1030,8 @@ class SglEngine(SglDecodeEngineMixin, InferenceEngine, RayActor):
         }
         if self._store_last_hidden_states:
             shapes["last_hidden_states"] = (seq_len, hidden_size)
+        if (getattr(self.args, "aspec_feature_contract", None) or {}).get("mtp") is not None:
+            shapes["mtp_hidden_states"] = (seq_len, hidden_size)
         return shapes
 
     def _get_tensor_dtypes(self) -> dict:
@@ -1040,4 +1042,6 @@ class SglEngine(SglDecodeEngineMixin, InferenceEngine, RayActor):
         }
         if self._store_last_hidden_states:
             dtypes["last_hidden_states"] = HIDDEN_STATES_STORAGE_DTYPE
+        if (getattr(self.args, "aspec_feature_contract", None) or {}).get("mtp") is not None:
+            dtypes["mtp_hidden_states"] = HIDDEN_STATES_STORAGE_DTYPE
         return dtypes

@@ -147,15 +147,9 @@ class NativeMTPDraftModel(Eagle3DraftModel):
 
     def predict_embeddings(self, hidden_states, input_embeds, position_ids, layout=None):
         """Shared native mathematics for trainable MTP and frozen feature extraction."""
-        embeds = self.pre_fc_norm_embedding(input_embeds)
-        hidden = self.pre_fc_norm_hidden(hidden_states)
-        projected = self.fc(torch.cat((embeds, hidden), dim=-1))
-        rotary_positions = position_ids.unsqueeze(0).expand(3, -1, -1)
-        positions = self.rotary_emb(projected, rotary_positions)
-        output = self.midlayer(projected, position_embeddings=positions,
-                               position_ids=position_ids, attention_mask=None,
-                               **({"mtp_layout": layout} if layout is not None else {}))
-        return self.norm(output)
+        from aspec.models.mtp_features import predict_mtp_embeddings
+
+        return predict_mtp_embeddings(self, hidden_states, input_embeds, position_ids, layout)
 
     def embed_input_ids(self, input_ids):
         return self.embed_tokens(input_ids)

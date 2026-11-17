@@ -68,7 +68,7 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
     Deletions use ``batch_remove(force=True)`` for immediate cleanup.
     """
 
-    TENSOR_SUFFIXES = ["_hs", "_tgt", "_ids", "_lhs"]
+    TENSOR_SUFFIXES = ["_hs", "_tgt", "_ids", "_lhs", "_mhs"]
 
     def reserve_p2p_output(
         self,
@@ -82,6 +82,7 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
         data_id: str = "",
         request_id: str = "",
         source_engine: str = "",
+        store_mtp_hidden_states: bool = False,
     ) -> "MooncakeP2PReservation":
         """Reserve the final P2P layout for direct Target-prefill writes."""
 
@@ -118,6 +119,8 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
                     HIDDEN_STATES_STORAGE_DTYPE,
                 )
             )
+        if store_mtp_hidden_states:
+            tensors.append(("mtp_hidden_states", (feature_sequence_length, hidden_size), HIDDEN_STATES_STORAGE_DTYPE))
         return self._p2p_transfer.reserve(
             feature_layer_width=(hidden_size if os.getenv("ASPEC_SHARED_FEATURE_VIEWS") == "1" else None),
             store_key=key,
@@ -306,6 +309,7 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
         data_id: str = "",
         request_id: str = "",
         source_engine: str = "",
+        mtp_hidden_states: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Store contiguous context shards while replicating the small token row."""
 
@@ -349,7 +353,11 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
                 data_id=data_id,
                 request_id=request_id,
                 source_engine=source_engine,
+                **({"mtp_hidden_states": unsharded_slice(mtp_hidden_states)}
+                   if mtp_hidden_states is not None else {}),
             )
+        if mtp_hidden_states is not None:
+            raise ValueError("MTP features require an unsharded CP1 consumer")
         p2p_descriptors = []
         try:
             for cp_rank in range(cp_size):
@@ -433,6 +441,7 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
         data_id: str = "",
         request_id: str = "",
         source_engine: str = "",
+        mtp_hidden_states: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Store Eagle3 output tensors via async batch_put_from.
 
@@ -461,6 +470,11 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
         if target is not None and target.dtype != HIDDEN_STATES_STORAGE_DTYPE:
             target = target.to(HIDDEN_STATES_STORAGE_DTYPE)
 
+        if mtp_hidden_states is not None:
+            if tuple(mtp_hidden_states.shape) != (input_ids.numel(), self.config.hidden_dim):
+                raise ValueError("MTP hidden states must align with input tokens and hidden width")
+            mtp_hidden_states = mtp_hidden_states.to(HIDDEN_STATES_STORAGE_DTYPE)
+
         keys = [f"{key}_hs", f"{key}_ids"]
         tensors = [hidden_states, input_ids]
 
@@ -472,6 +486,10 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
             keys.append(f"{key}_lhs")
             tensors.append(last_hidden_states)
 
+        if mtp_hidden_states is not None:
+            keys.append(f"{key}_mhs")
+            tensors.append(mtp_hidden_states)
+
         descriptor_key = key
         if self.config.data_plane == "transfer_engine":
             if self._p2p_transfer is None:
@@ -481,6 +499,8 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
                 names.append("target")
             if last_hidden_states is not None:
                 names.append("last_hidden_states")
+            if mtp_hidden_states is not None:
+                names.append("mtp_hidden_states")
             descriptor = self._p2p_transfer.stage(
                 store_key=key,
                 tensors=zip(names, tensors),
@@ -508,6 +528,10 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
         if last_hidden_states is not None:
             shapes["last_hidden_states"] = tuple(last_hidden_states.shape)
             dtypes["last_hidden_states"] = last_hidden_states.dtype
+
+        if mtp_hidden_states is not None:
+            shapes["mtp_hidden_states"] = tuple(mtp_hidden_states.shape)
+            dtypes["mtp_hidden_states"] = mtp_hidden_states.dtype
 
         logger.debug("put: completed key=%s, shapes=%s", key, shapes)
         return {"shapes": shapes, "dtypes": dtypes, "mooncake_key": descriptor_key}
@@ -634,6 +658,7 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
                 last_hidden_states=tensor_map.get("last_hidden_states"),
                 input_ids_cpu=None,
                 p2p_receive_lease=read_result.lease,
+                mtp_hidden_states=tensor_map.get("mtp_hidden_states"),
             )
 
         keys = [f"{key}_hs", f"{key}_ids"]
@@ -661,6 +686,11 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
                     dtypes.get("hidden_states", HIDDEN_STATES_STORAGE_DTYPE),
                 )
             )
+
+        if "mtp_hidden_states" in shapes:
+            keys.append(f"{key}_mhs")
+            tensor_specs.append(("mtp_hidden_states", shapes["mtp_hidden_states"],
+                                 dtypes.get("mtp_hidden_states", HIDDEN_STATES_STORAGE_DTYPE)))
 
         # Publication is asynchronous on inference workers.  Wait for a
         # complete metadata census before attempting either byte-transfer
@@ -701,6 +731,7 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
             input_ids=tensor_map["input_ids"],
             last_hidden_states=tensor_map.get("last_hidden_states"),
             input_ids_cpu=tensor_map.get("input_ids_cpu"),
+            mtp_hidden_states=tensor_map.get("mtp_hidden_states"),
         )
 
     def _get_tensors_gpu_direct(
@@ -898,6 +929,7 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
         key: str,
         has_last_hidden_states: bool = False,
         has_target: bool = False,
+        has_mtp_hidden_states: bool = False,
     ) -> None:
         """Force-delete all tensors associated with an Eagle3 output.
 
@@ -924,6 +956,8 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
             keys.append(f"{key}_tgt")
         if has_last_hidden_states:
             keys.append(f"{key}_lhs")
+        if has_mtp_hidden_states:
+            keys.append(f"{key}_mhs")
 
         for attempt in range(1, 4):
             try:
@@ -961,6 +995,7 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
         key: str,
         has_last_hidden_states: bool = False,
         has_target: bool = False,
+        has_mtp_hidden_states: bool = False,
     ) -> None:
         """Release storage for an output that no trainer consumed.
 
@@ -975,6 +1010,7 @@ class EagleMooncakeStore(MooncakeHiddenStateStore):
                 key,
                 has_last_hidden_states=has_last_hidden_states,
                 has_target=has_target,
+                **({"has_mtp_hidden_states": True} if has_mtp_hidden_states else {}),
             )
             return
         if self._p2p_transfer is None:

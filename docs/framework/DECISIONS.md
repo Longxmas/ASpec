@@ -58,6 +58,9 @@ These decisions describe the maintained implementation and its public behavior.
   freezes the complete Draft and head, uses the documented Top-K forward-KL objective and delivers
   native assets; it does not claim an unpublished official training recipe. Native MTP preserves
   the original Qwen3.5 predictor and same-Target frozen bindings.
+  MTP-conditioned DSpark/DFlash can capture frozen predictor features on Target while training
+  the residual fusion on Draft. Older assets retain their Draft-side feature policy; changing
+  the source starts a new phase rather than an exact-resume transition.
 - **Serving boundary.** Maintain faithful export formats, strict loaders and proposal components.
   SGLang serving scheduling, deployment and performance belong to the downstream runtime.
 - **Measurement.** Compare normally enabled complete workflows with reasonable buffers and

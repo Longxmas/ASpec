@@ -106,6 +106,10 @@ class TrainingFeaturePublisher:
         self.is_publisher = True
         self.forward_started_ns = None
         self.pending_outputs = {}
+        self.mtp_policy = config.get("mtp")
+        self.target_model_path = config.get("target_model_path")
+        self.mtp = None
+        self.target_tensor_parallel_size = config.get("target_tensor_parallel_size", 1)
 
     def configure_model(self, model):
         from sglang.srt.runtime_context import get_parallel
@@ -140,6 +144,17 @@ class TrainingFeaturePublisher:
             if len(actual) != len(self.layers):
                 raise RuntimeError("Target capture configuration dropped requested layers")
             self.capture_layers = actual
+        if self.mtp_policy is not None and self.is_publisher:
+            from aspec.inference.mtp_features import FrozenTargetMTP
+
+            embedding = getattr(self.backbone, "embed_tokens", None)
+            weight = getattr(embedding, "weight", None)
+            parameter = next(model.parameters())
+            self.mtp = FrozenTargetMTP.from_target(
+                self.mtp_policy, self.target_model_path, weight,
+                device=parameter.device, dtype=parameter.dtype,
+                allow_replicated_embedding=self.target_tensor_parallel_size > 1,
+            )
         model.aspec_feature_publisher = self
         original = model.logits_processor.forward
 
@@ -279,6 +294,7 @@ class TrainingFeaturePublisher:
             source_engine=os.getenv("ASPEC_ENGINE_RANK", ""),
             context_parallel_size=self.cp_size,
             context_shard_alignment=self.cp_alignment,
+            **({"mtp_feature_producer": self.mtp} if self.mtp is not None else {}),
         )
         self.sink.aux_accumulator = StreamingLayerAccumulator(self.sink, sorted(self.capture_layers))
         self.backbone.target_prefill_direct_sink = self.sink
@@ -329,6 +345,7 @@ class TrainingFeaturePublisher:
                 source_engine=os.getenv("ASPEC_ENGINE_RANK", ""),
                 context_parallel_size=cp_size,
                 context_shard_alignment=self.cp_alignment,
+                **({"mtp_feature_producer": self.mtp} if self.mtp is not None else {}),
             )
             try:
                 self.sink.begin(input_ids=ids, request_ids=batch.rids,
@@ -355,6 +372,8 @@ class TrainingFeaturePublisher:
                     last_hidden_states=teacher[offset:end] if self.store_last else None,
                     data_id=identity["aspec_data_id"], request_id=rid,
                     source_engine=os.getenv("ASPEC_ENGINE_RANK", ""),
+                    **({"mtp_hidden_states": self.mtp(ids[offset:end], teacher[offset:end])}
+                       if self.mtp is not None else {}),
                 )
                 if os.getenv("ASPEC_DIRECT_CP_SHARDED_MOONCAKE") == "1" and self.cp_size > 1:
                     bases = [f"{payload['key']}_cp{rank}" for rank in range(self.cp_size)]
@@ -364,6 +383,8 @@ class TrainingFeaturePublisher:
                 else:
                     bases = [payload["key"]]
                 suffixes = ("hs", "ids", "lhs") if self.store_last else ("hs", "ids")
+                if self.mtp is not None:
+                    suffixes += ("mhs",)
                 if rid in owner.requests:
                     raise RuntimeError("Target Store batch contains duplicate request IDs")
                 owner.requests[rid] = tuple(f"{base}_{suffix}" for base in bases for suffix in suffixes)
@@ -464,6 +485,8 @@ class TrainingFeaturePublisher:
         status = self.store.get_p2p_status() if self.store is not None else None
         if status is not None:
             status["pending_response_outputs"] = len(self.pending_outputs)
+            if self.mtp is not None:
+                status["mtp_features"] = self.mtp.status()
         return json.dumps(status, sort_keys=True, separators=(",", ":")) if status is not None else ""
 
 
@@ -572,6 +595,9 @@ def training_engine_kwargs(kwargs, args):
             "direct_prefill": args.target_prefill_memory_optimized,
             "final_hidden_as_aux": getattr(args, "draft_algorithm", None) == "mtp",
             "attention_backend": args.attention_backend,
+            **({"mtp": args.aspec_feature_contract["mtp"], "target_model_path": args.target_model_path}
+               if (getattr(args, "aspec_feature_contract", None) or {}).get("mtp") is not None else {}),
+            "target_tensor_parallel_size": getattr(args, "sglang_tp_size", 1),
         },
     })
     result["forward_hooks"] = hooks

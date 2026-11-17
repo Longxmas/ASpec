@@ -254,6 +254,7 @@ class DFlashModel(nn.Module):
     def uses_target_hidden_states(self) -> bool:
         return self.uses_target_distribution or bool(
             self.mtp_conditioning and self.mtp_conditioning["mode"] == "hidden"
+            and self.mtp_conditioning.get("feature_source", "draft") == "draft"
         )
 
     def _prepare_draft_prefix(self, input_ids, last_hidden_states, attention_mask, draft_prefix,

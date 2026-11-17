@@ -450,6 +450,7 @@ class MooncakeDataset(IterableDataset):
             sample.mooncake_key,
             has_last_hidden_states=has_lhs,
             has_target=has_target,
+            **({"has_mtp_hidden_states": True} if "mtp_hidden_states" in shapes else {}),
         )
 
     def _compute_loss_mask(self, data: Dict[str, Any]) -> torch.Tensor | None:
@@ -568,6 +569,7 @@ class MooncakeDataset(IterableDataset):
                     elif tensor.dim() == 2 and key in [
                         "hidden_states",
                         "last_hidden_states",
+                        "mtp_hidden_states",
                         "target",
                     ]:
                         data[key] = tensor.unsqueeze(0)  # (seq_len, dim) -> (1, seq_len, dim)
@@ -674,6 +676,7 @@ class MooncakeDataset(IterableDataset):
                 shard_key,
                 has_last_hidden_states="last_hidden_states" in local_shapes,
                 has_target="target" in local_shapes,
+                **({"has_mtp_hidden_states": True} if "mtp_hidden_states" in local_shapes else {}),
             )
             storage_released = True
             if self._feature_contract_runtime is not None:
@@ -699,6 +702,7 @@ class MooncakeDataset(IterableDataset):
                 elif tensor.dim() == 2 and name in {
                     "hidden_states",
                     "last_hidden_states",
+                    "mtp_hidden_states",
                     "target",
                 }:
                     data[name] = tensor.unsqueeze(0)
@@ -759,6 +763,7 @@ class MooncakeDataset(IterableDataset):
                 elif tensor.dim() == 2 and key in {
                     "hidden_states",
                     "last_hidden_states",
+                    "mtp_hidden_states",
                     "target",
                 }:
                     data[key] = tensor.unsqueeze(0)

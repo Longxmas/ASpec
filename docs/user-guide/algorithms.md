@@ -106,8 +106,11 @@ official-recipe reproduction or long-term quality.
 
 `configs/recipes/qwen3_5_9b_dmtp.yaml` uses the native Qwen3.5 predictor as a frozen
 condition for a DSpark Draft. DFlash uses the corresponding DMTP Draft JSON.
-The ordinary trainer owns fusion parameters, optimizer, recovery and native assets;
-Target selected-layer/final-state transport stays unchanged. Dense full GQA, CP1,
+The ordinary trainer owns fusion parameters, optimizer, recovery and native assets.
+With `feature_source: target`, the Target publishes document-aligned frozen MTP
+features for online, shared or offline consumption; the Draft does not load the
+predictor. Existing policies without that field retain Draft-side execution.
+Dense full GQA, CP1,
 MBS1, REPLICATE, one node and non-packing are the initial scope. Other combinations
 fail Plan validation. Follow the [workflow and timing contract](../../examples/qwen3.5-9b-dmtp/README.md).
 Given teacher-forced T1, only unknown suffix positions receive supervision. Suffix

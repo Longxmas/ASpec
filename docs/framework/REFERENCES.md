@@ -19,10 +19,11 @@ the retained source identities; applicable license and notice texts are distribu
 | [DFlash](https://github.com/z-lab/dflash) `07ebd93db9f472af339b644bb70221ad8428328a` | DFlash2 model adaptation inherited through TorchSpec; Z Lab MIT notices retained |
 | [Transformers](https://github.com/huggingface/transformers) v4.57.1 `8cb5963cc22174954e7dca2c0a3320b7dc2f4edc` | Adapted `Qwen3MoeSparseMoeBlock` and load-balancing objective in `aspec/models/draft/moe.py` |
 | [DMTP](https://sylvan820.github.io/D-MTP/) | Inspiration for dual-anchor MTP hidden conditioning and zero-initialized embedding residual; independent ASpec integration reuses the retained native predictor, without copying DMTP code |
+| [SpecForge DMTP capture](https://github.com/sgl-project/SpecForge/tree/c02184448f9b000060df50307b7044c3b475ad79) | Inspiration for Target-side frozen MTP feature production; ASpec adapts its own native predictor and publication/transport lifecycle, without copying the capture plugin |
 | [Speculators](https://github.com/vllm-project/speculators) `7ec7aba9450b533334e8f7992baf4e93be3c1a57` | Native MTP recurrent objective and checkpoint bindings; ASpec supplies its own training/layout integration |
 | [Speculators](https://github.com/vllm-project/speculators) `3702320434bbdaa853f0846a66e6b6b8f1d97aec` | Adapted P-EAGLE model/loss and Qwen3 first-layer fusion; deterministic dense layout and ASpec input/observation boundary |
 | [Ling-3.0-flash](https://huggingface.co/inclusionAI/Ling-3.0-flash) `fcc60a52b34c69c6271d0ac8a8cb0815020b6a43` | Adapted MoE routing and independently retained reference class bodies; Apache-2.0 source headers preserved |
-| [EAGLE](https://github.com/SafeAILab/EAGLE), [GPT-NeoX](https://github.com/EleutherAI/gpt-neox) and Transformers through TorchSpec | Model/data helpers in `aspec/models/draft/base.py` and `aspec/data/preprocessing.py`; original source headers retain the transitive attribution |
+| [EAGLE](https://github.com/SafeAILab/EAGLE), [GPT-NeoX](https://github.com/EleutherAI/gpt-neox) and Transformers through TorchSpec | Model/data helpers in `aspec/models/draft/base.py`, shared checkpoint reads in `aspec/models/checkpoint.py`, and `aspec/data/preprocessing.py`; original source headers retain the transitive attribution |
 
 `aspec/utils/usp.py` and the inherited test modules retain TorchSpec's MIT notice even when the
 upstream file had no per-file header. ASpec's namespace, contract and regression changes do not

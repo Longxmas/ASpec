@@ -20,17 +20,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import glob
-import json
-import os
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-from huggingface_hub import snapshot_download
-from safetensors import safe_open
 from transformers.modeling_utils import PreTrainedModel
+
+from aspec.models.checkpoint import load_tensor_from_pretrained as load_tensor_from_pretrained
 
 
 def _make_causal_mask(
@@ -333,43 +330,3 @@ class Eagle3DraftModel(PreTrainedModel, ABC):
                 "and target to share hidden size and vocabulary."
             )
         self.lm_head.weight.copy_(weight)
-
-
-def load_tensor_from_pretrained(model_path: str, key: str) -> torch.Tensor:
-    """Read a single tensor by key from an HF checkpoint directory or hub repository id."""
-    if not os.path.exists(model_path):
-        # model_path is a huggingface repository, so locate its local cache first
-        return load_tensor_from_pretrained(snapshot_download(repo_id=model_path), key)
-
-    # check if there is file ending with index.json
-    glob_path = os.path.join(model_path, "*.index.json")
-    index_json_path = glob.glob(glob_path)
-
-    if len(index_json_path) == 0:
-        # No index.json found, look for single model file
-        safetensors_path = os.path.join(model_path, "model.safetensors")
-        if os.path.exists(safetensors_path):
-            with safe_open(safetensors_path, framework="pt") as f:
-                return f.get_tensor(key)
-
-        pytorch_model_path = os.path.join(model_path, "pytorch_model.bin")
-        if os.path.exists(pytorch_model_path):
-            state_dict = torch.load(pytorch_model_path, map_location="cpu")
-            return state_dict[key]
-
-        raise FileNotFoundError(
-            f"No index.json, model.safetensors or pytorch_model.bin found in {model_path}"
-        )
-    if len(index_json_path) > 1:
-        raise FileNotFoundError(f"Multiple index.json files found in {model_path}")
-    index_json_path = index_json_path[0]
-
-    with open(index_json_path, "r") as f:
-        index_json = json.load(f)
-    ckpt_file = index_json["weight_map"][key]
-
-    if ckpt_file.endswith(".safetensors"):
-        with safe_open(os.path.join(model_path, ckpt_file), framework="pt") as f:
-            return f.get_tensor(key)
-    state_dict = torch.load(os.path.join(model_path, ckpt_file))
-    return state_dict[key]

@@ -26,6 +26,7 @@
   "mask_token_id": 248070,
   "tie_word_embeddings": false,
   "mtp_conditioning": {
+    "feature_source": "target",
     "mode": "hidden",
     "native_config": {
       "attention_bias": false,

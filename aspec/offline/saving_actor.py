@@ -114,6 +114,7 @@ class OfflineSavingActor:
                     sample.mooncake_key,
                     has_last_hidden_states="last_hidden_states" in sample.tensor_shapes,
                     has_target="target" in sample.tensor_shapes,
+                    **({"has_mtp_hidden_states": True} if "mtp_hidden_states" in sample.tensor_shapes else {}),
                 )
                 ray.get(
                     self.controller.release_inference_output.remote(

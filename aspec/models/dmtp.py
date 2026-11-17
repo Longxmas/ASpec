@@ -40,6 +40,35 @@ class MTPAnchorFusion(nn.Module):
         return embeddings + self.proj(features)
 
 
+class FrozenMTPBinding(nn.Module):
+    """Checkpoint the same-Target native-weight identity, with no predictor allocation."""
+
+    def __init__(self, native_config):
+        super().__init__()
+        self.native_config = native_config
+        self.register_buffer("fingerprint", torch.zeros(32, dtype=torch.uint8))
+
+    def _current_fingerprint(self, target_model_path):
+        from aspec.models.draft.base import load_tensor_from_pretrained
+        from aspec.models.draft.mtp import NativeMTPDraftModel
+        from aspec.models.mtp_features import native_mtp_fingerprint
+
+        template = FrozenMTPFeatures(self.native_config)
+        return native_mtp_fingerprint(
+            (name, load_tensor_from_pretrained(target_model_path, NativeMTPDraftModel.native_key(name)))
+            for name in template.state_dict()
+        )
+
+    def initialize_native_weights(self, target_model_path):
+        digest = self._current_fingerprint(target_model_path)
+        self.load_state_dict({"fingerprint": torch.tensor(list(digest), dtype=torch.uint8)}, assign=True)
+
+    def validate_native_weights(self, target_model_path):
+        actual = bytes(self.fingerprint.cpu().tolist())
+        if actual != self._current_fingerprint(target_model_path):
+            raise ValueError("Frozen MTP checkpoint fingerprint differs from its Target")
+
+
 class FrozenMTPFeatures(nn.Module):
     """The native predictor body, borrowing the Draft's frozen Target embedding.
 
@@ -112,6 +141,8 @@ def training_mtp_prefix(draft, input_ids, last_hidden_states, attention_mask=Non
     policy = draft.config.mtp_conditioning
     if policy["mode"] == "token":
         return MTPPrefix()
+    if policy.get("feature_source", "draft") == "target":
+        raise ValueError("Target-side MTP conditioning requires captured mtp_hidden_states")
     if last_hidden_states is None or last_hidden_states.shape[:2] != input_ids.shape:
         raise ValueError("MTP hidden conditioning requires aligned post-norm Target final states")
     if input_ids.shape[0] != 1:

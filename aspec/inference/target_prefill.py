@@ -54,6 +54,7 @@ class TargetPrefillDirectSink:
         source_engine: str = "",
         context_parallel_size: int | None = None,
         context_shard_alignment: int | None = None,
+        mtp_feature_producer=None,
     ) -> None:
         if not requests:
             raise ValueError("Target prefill direct output requires at least one request")
@@ -93,6 +94,8 @@ class TargetPrefillDirectSink:
         self.final_hidden_as_aux = final_hidden_as_aux
         self.store_last_hidden_states = bool(store_last_hidden_states)
         self.source_engine = source_engine
+        self.mtp_feature_producer = mtp_feature_producer
+        self._input_ids = None
         self.context_parallel_size = int(context_parallel_size)
         self.context_shard_alignment = int(context_shard_alignment)
         self._layer_columns = {
@@ -131,6 +134,8 @@ class TargetPrefillDirectSink:
                 "Target prefill input_ids must be the flat, complete prefill batch"
             )
 
+        if self.mtp_feature_producer is not None:
+            self._input_ids = input_ids
         offset = 0
         try:
             for request in self.requests:
@@ -163,6 +168,7 @@ class TargetPrefillDirectSink:
                         data_id=request.data_id,
                         request_id=request.request_id,
                         source_engine=self.source_engine,
+                        **({"store_mtp_hidden_states": True} if self.mtp_feature_producer is not None else {}),
                     )
                     reservations.append(reservation)
                     # Register ownership before a copy or later CP reservation
@@ -235,6 +241,16 @@ class TargetPrefillDirectSink:
                     reservation.tensors["last_hidden_states"].copy_(
                         hidden_states[part]
                     )
+        if self.mtp_feature_producer is not None:
+            offset = 0
+            for request in self.requests:
+                end = offset + request.sequence_length
+                features = self.mtp_feature_producer(self._input_ids[offset:end], hidden_states[offset:end])
+                for reservation, part in zip(self._reservations[request.request_id],
+                                              self._slices[request.request_id], strict=True):
+                    reservation.tensors["mtp_hidden_states"].copy_(features[part.start - offset:part.stop - offset])
+                offset = end
+            self._input_ids = None
         self._final_written = True
 
     def commit_request(self, request_id: str) -> str:
@@ -305,6 +321,7 @@ class TargetPrefillDirectSink:
                     errors.append(exc)
         self._reservations.clear()
         self._slices.clear()
+        self._input_ids = None
         if errors:
             raise RuntimeError("failed to release a Target prefill P2P reservation") from errors[0]
 

@@ -166,6 +166,7 @@ class MooncakeConfig:
     max_seq_len: int = 8192
     hidden_dim: int = 4096
     num_aux_layers: int = 3
+    include_mtp_hidden_states: bool = False
     async_put_pool_size: int | None = None
     store_full_error_codes: Tuple[int, ...] = (-200,)
     store_full_wait_seconds: float = 0.5
@@ -279,6 +280,7 @@ class MooncakeConfig:
                 hidden_dim=self.hidden_dim,
                 num_aux_layers=self.num_aux_layers,
                 safety_margin=2.0,
+                include_mtp_hidden_states=self.include_mtp_hidden_states,
             )
 
         if self.async_put_pool_size is None:
@@ -294,6 +296,7 @@ class MooncakeConfig:
                 hidden_dim=self.hidden_dim,
                 num_aux_layers=self.num_aux_layers,
                 safety_margin=1.0 if self.data_plane == "transfer_engine" else 1.1,
+                include_mtp_hidden_states=self.include_mtp_hidden_states,
             )
 
     @staticmethod
@@ -375,6 +378,8 @@ class MooncakeConfig:
             ),
             "hidden_dim": getattr(args, "mooncake_hidden_dim", 4096),
             "num_aux_layers": cls._infer_num_aux_layers(args),
+            "include_mtp_hidden_states": "mtp_hidden_states" in (
+                (getattr(args, "aspec_feature_contract", None) or {}).get("tensors", {})),
             "store_full_error_codes": tuple(
                 getattr(args, "mooncake_store_full_error_codes", (-200,))
             ),
@@ -448,6 +453,7 @@ class MooncakeConfig:
         os.environ["MOONCAKE_LOCAL_BUFFER_SIZE"] = str(self.local_buffer_size)
         os.environ["MOONCAKE_HOST_BUFFER_SIZE"] = str(self.host_buffer_size)
         os.environ["MOONCAKE_NUM_AUX_LAYERS"] = str(self.num_aux_layers)
+        os.environ["MOONCAKE_INCLUDE_MTP_HIDDEN_STATES"] = "1" if self.include_mtp_hidden_states else "0"
         os.environ["MOONCAKE_PROTOCOL"] = self.protocol
         os.environ["MOONCAKE_DEVICE_NAME"] = self.device_name
         os.environ["MOONCAKE_RDMA_PORT"] = str(self.rdma_port)
@@ -608,6 +614,7 @@ class MooncakeConfig:
             local_buffer_size=int(os.getenv("MOONCAKE_LOCAL_BUFFER_SIZE", str(512 * 1024 * 1024))),
             host_buffer_size=host_buffer_size,
             num_aux_layers=num_aux_layers,
+            include_mtp_hidden_states=os.getenv("MOONCAKE_INCLUDE_MTP_HIDDEN_STATES", "0") == "1",
             async_put_pool_size=async_put_pool_size,
             protocol=os.getenv("MOONCAKE_PROTOCOL", "tcp"),
             device_name=os.getenv("MOONCAKE_DEVICE_NAME", ""),

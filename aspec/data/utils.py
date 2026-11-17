@@ -176,6 +176,13 @@ class DataCollatorWithPadding:
                         for item in features
                     ]
                 )
+        mtp = [item.get("mtp_hidden_states") for item in features]
+        if any(value is not None for value in mtp):
+            if not all(value is not None for value in mtp):
+                raise ValueError("MTP features must be present for every document in the batch")
+            if any(value.shape[:2] != item["input_ids"].shape for item, value in zip(features, mtp, strict=True)):
+                raise ValueError("MTP features must align with each document's input token IDs")
+            batch["mtp_hidden_states"] = torch.cat([self.paddingtensor(value, max_length) for value in mtp])
         return batch
 
 
@@ -226,6 +233,8 @@ class DFlashPackingCollator:
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not features:
             raise ValueError("DFlashPackingCollator received an empty row")
+        if any(item.get("mtp_hidden_states") is not None for item in features):
+            raise ValueError("MTP-conditioned documents do not support packing")
         lengths = [int(item["input_ids"].shape[1]) for item in features]
         used = sum(lengths)
         if used <= 0 or used > self.max_seq_length:

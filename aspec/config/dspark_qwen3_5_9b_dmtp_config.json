@@ -30,6 +30,7 @@
   "confidence_head_with_markov": true,
   "tie_word_embeddings": false,
   "mtp_conditioning": {
+    "feature_source": "target",
     "mode": "hidden",
     "native_config": {
       "attention_bias": false,

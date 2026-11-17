@@ -1,6 +1,6 @@
 # Release training starting point: three passes, held-out eval and checkpoints.
 # Hyperparameters are not a convergence/quality claim; see docs/user-guide/recipes.md.
-# MTP-hidden-conditioned DSpark, native Qwen3.5 predictor frozen on each Draft.
+# MTP-hidden-conditioned DSpark, native Qwen3.5 predictor frozen on the Target publisher.
 # CP1, MBS1, Dense full GQA, REPLICATE, no packing/whole-model compile.
 # Conditional-suffix observations do not certify a serving implementation.
 

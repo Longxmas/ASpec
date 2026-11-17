@@ -37,7 +37,7 @@ from typing import Any
 import torch
 
 OFFLINE_SCHEMA_VERSION = 2
-_TENSOR_NAMES = ("input_ids", "hidden_states", "target", "last_hidden_states")
+_TENSOR_NAMES = ("input_ids", "hidden_states", "target", "last_hidden_states", "mtp_hidden_states")
 
 
 class OfflineDataset:

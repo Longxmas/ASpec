@@ -11,8 +11,12 @@ def resolve_mtp_conditioning(raw):
     policy = raw.get("mtp_conditioning")
     if policy is None:
         return None
-    if not isinstance(policy, Mapping) or set(policy) != {"mode", "native_config"}:
-        raise ValueError("mtp_conditioning requires exactly mode and native_config")
+    if (not isinstance(policy, Mapping)
+            or not {"mode", "native_config"} <= set(policy)
+            or set(policy) - {"mode", "native_config", "feature_source"}):
+        raise ValueError("mtp_conditioning requires mode and native_config, with optional feature_source")
+    if policy.get("feature_source", "draft") not in {"draft", "target"}:
+        raise ValueError("MTP feature_source must be draft or target")
     if policy["mode"] not in {"token", "hidden"}:
         raise ValueError("MTP conditioning mode must be token or hidden")
     architectures = raw.get("architectures")
@@ -43,7 +47,13 @@ def resolve_mtp_conditioning(raw):
         raise ValueError("MTP conditioning requires the same frozen Target embedding width")
     if "full_attention" not in native.get("layer_types", []):
         raise ValueError("MTP native config must identify its full-attention predictor")
-    return {"mode": policy["mode"], "native_config": copy.deepcopy(native)}
+    return {"mode": policy["mode"], "native_config": copy.deepcopy(native),
+            **({"feature_source": policy["feature_source"]} if "feature_source" in policy else {})}
+
+
+def target_mtp_features(policy):
+    """Old assets retain Draft-side execution; new policies can request Target capture."""
+    return bool(policy and policy["mode"] == "hidden" and policy.get("feature_source", "draft") == "target")
 
 
 def mtp_conditioning_semantics(raw):
@@ -56,7 +66,9 @@ def mtp_conditioning_semantics(raw):
         "first_candidate": "teacher_forced_in_training_native_mtp_in_proposals",
         "target_context": "strictly_before_original_anchor",
         "prediction_state": "target_h[a-1]_and_token_x[a]_predict_x[a+1]",
-        "feature_computation": "frozen_draft_side_native_mtp",
+        "feature_computation": ("frozen_target_side_native_mtp"
+                                if policy.get("feature_source", "draft") == "target"
+                                else "frozen_draft_side_native_mtp"),
         "feature_stage": "native_predictor_post_norm",
         "fusion": "zero_initialized_embedding_residual" if policy["mode"] == "hidden" else None,
         "frozen": ["native_mtp", "target_embedding", "target_lm_head"],
@@ -80,7 +92,7 @@ def validate_mtp_target_config(native, target):
             raise ValueError("MTP conditioning native config differs from its Target: " + key)
 
 
-def mtp_conditioning_memory(policy):
+def mtp_conditioning_memory(policy, *, target_tensor_parallel_size=1):
     """Additional BF16 model/optimizer bytes; neither total fit nor activation peak."""
     if policy is None:
         return None
@@ -90,7 +102,7 @@ def mtp_conditioning_memory(policy):
     frozen = sum(p.numel() for p in source.parameters())
     width = policy["native_config"]["hidden_size"]
     fusion = 2 * width * width + 2 * width if policy["mode"] == "hidden" else 0
-    return {
+    result = {
         "scope": "additional Draft-side components; no duplicated vocabulary embedding/head",
         "frozen_weight_bytes": 2 * frozen,
         "trainable_weight_bytes": 2 * fusion,
@@ -101,3 +113,18 @@ def mtp_conditioning_memory(policy):
         "derived_feature_bytes_per_token": 2 * width if fusion else 0,
         "activation_peak_bytes": None,
     }
+    if policy.get("feature_source", "draft") == "target":
+        result.update(
+            scope="Draft fusion and Target publisher predictor are separate allocations",
+            frozen_weight_bytes=0, derived_feature_bytes_per_token=0,
+            frozen_binding_bytes=32,
+            target={
+                "publisher_rank_only": True,
+                "frozen_weight_bytes": 2 * frozen if policy["mode"] == "hidden" else 0,
+                "replicated_embedding_bytes": (2 * width * policy["native_config"]["vocab_size"]
+                                               if policy["mode"] == "hidden" and target_tensor_parallel_size > 1 else 0),
+                "activation_peak_bytes": None,
+            },
+            transported_feature_bytes_per_token=2 * width if policy["mode"] == "hidden" else 0,
+        )
+    return result

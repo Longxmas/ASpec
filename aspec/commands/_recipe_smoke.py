@@ -19,6 +19,7 @@ import json
 import os
 import secrets
 import sys
+from itertools import chain
 from pathlib import Path
 
 import ray
@@ -35,8 +36,8 @@ def audit_state(trainer):
 
         result["mtp_conditioning"] = {
             "policy": draft.config.mtp_conditioning,
-            "frozen": tensor_hash((n, p) for n, p in draft.named_parameters()
-                                  if n.startswith(("mtp_source.", "embed_tokens."))),
+            "frozen": tensor_hash((n, p) for n, p in chain(draft.named_parameters(), draft.named_buffers())
+                                  if n.startswith(("mtp_source.", "mtp_binding.", "embed_tokens."))),
             "fusion": tensor_hash(draft.mtp_fusion.named_parameters())
                       if draft.mtp_fusion is not None else None,
         }

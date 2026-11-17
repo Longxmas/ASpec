@@ -585,7 +585,8 @@ def _load_draft_descriptor(config: DictConfig) -> dict[str, Any]:
                 raise PlanCompileError(f"MTP conditioning requires training.{key}={required}")
         if _select(config, "dataset.eval_micro_batch_size") not in {None, 1}:
             raise PlanCompileError("MTP conditioning requires dataset.eval_micro_batch_size=1")
-        if conditioning["mode"] == "hidden" and not _select(config, "inference.store_last_hidden_states"):
+        if (conditioning["mode"] == "hidden" and conditioning.get("feature_source", "draft") == "draft"
+                and not _select(config, "inference.store_last_hidden_states")):
             raise PlanCompileError("MTP hidden conditioning requires inference.store_last_hidden_states=true")
         start = 2 if family == "dflash" else 1
         if _select(config, "training.dflash_block_size") <= start:
@@ -595,6 +596,13 @@ def _load_draft_descriptor(config: DictConfig) -> dict[str, Any]:
         if (_select(config, "training.training_num_nodes", 1) != 1
                 or _select(config, "cluster.mode", "single_node") != "single_node"):
             raise PlanCompileError("MTP conditioning currently supports a single node")
+        if conditioning.get("feature_source", "draft") == "target":
+            if backend == "usp" or _select(config, "inference.sglang.pp_size", 1) != 1:
+                raise PlanCompileError("Target MTP capture requires PP1 and non-USP Draft execution")
+            if ((_select(config, "inference.sglang.extra_args", {}) or {}).get("quantization")
+                    or target_raw and (target_raw.get("quantization_config")
+                                       or target_raw.get("text_config", {}).get("quantization_config"))):
+                raise PlanCompileError("Target MTP capture requires unquantized native weights")
 
     return {
         "mtp_conditioning": conditioning,
@@ -1379,6 +1387,10 @@ def _workload(
             target_num_hidden_layers=draft["target_num_hidden_layers"],
             aux_hidden_state_layers=list(draft["target_layer_ids"]),
             store_last_hidden_states=store_last,
+            **({"mtp": {"native_config": draft["mtp_conditioning"]["native_config"],
+                         "embedding_key": _select(config, "model.embedding_key")}}
+               if draft.get("mtp_conditioning") and draft["mtp_conditioning"]["mode"] == "hidden"
+               and draft["mtp_conditioning"].get("feature_source", "draft") == "target" else {}),
         )
     except FeatureContractError as exc:
         raise PlanCompileError(str(exc)) from exc
@@ -1446,7 +1458,20 @@ def _policy(
     from aspec.config.mtp_conditioning import mtp_conditioning_memory, resolve_mtp_conditioning
 
     raw = json.loads(Path(_select(config, "model.draft_model_config")).read_text())
-    conditioning_memory = mtp_conditioning_memory(resolve_mtp_conditioning(raw))
+    conditioning_memory = mtp_conditioning_memory(
+        resolve_mtp_conditioning(raw), target_tensor_parallel_size=_select(config, "inference.sglang.tp_size", 1))
+    capture = runtime.get("aspec_feature_contract", {}).get("mtp")
+    target_mtp_memory = None
+    if capture is not None and runtime["inference_engine_type"] != "offline":
+        # A shared source may be compiled from a plain Draft's configuration.
+        # Its physical capture contract, rather than that first consumer, owns
+        # the Target predictor and optional replicated embedding allocation.
+        target_mtp_memory = mtp_conditioning_memory(
+            {"mode": "hidden", "native_config": capture["native_config"], "feature_source": "target"},
+            target_tensor_parallel_size=_select(config, "inference.sglang.tp_size", 1),
+        )["target"]
+    if conditioning_memory is not None:
+        conditioning_memory.pop("target", None)
     cluster_mode = _select(config, "cluster.mode", "single_node")
     data_plane = _select(config, "mooncake.data_plane", "store")
     transport_protocol = _select(config, "mooncake.protocol", "tcp")
@@ -1480,6 +1505,7 @@ def _policy(
         ),
         hidden_dim=_select(config, "mooncake.hidden_dim", 4096),
         num_aux_layers=len(runtime["aux_hidden_states_layers"]),
+        include_mtp_hidden_states=bool(runtime.get("aspec_feature_contract", {}).get("mtp")),
         host_buffer_size=_select(config, "mooncake.host_buffer_size"),
         async_put_pool_size=_select(
             config,
@@ -1706,6 +1732,7 @@ def _policy(
         capacity={
             "device_memory": {
                 **({"mtp_conditioning": conditioning_memory} if conditioning_memory else {}),
+                **({"target_mtp_features": target_mtp_memory} if target_mtp_memory else {}),
                 "sglang_static_fraction": (None if runtime["inference_engine_type"] == "offline"
                                            else _select(config, "inference.sglang.mem_fraction_static"))
             },
@@ -1891,6 +1918,7 @@ def compile_execution_plan(
             **workload.data, "train_source": train_source,
             "eval_source": train_source if dataset.count("eval") else None,
             "offline_dataset_identity": dataset.identity})
+    runtime["aspec_feature_contract"] = copy.deepcopy(dict(workload.features))
     policy = _policy(config, runtime, context_contract)
     max_pool_size = policy.capacity["host_orchestrator"]["max_sample_pool_size"]
     if not isinstance(max_pool_size, int) or max_pool_size < 0:

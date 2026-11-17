@@ -67,6 +67,7 @@ def build_target_feature_contract(
     target_num_hidden_layers: int,
     aux_hidden_state_layers: list[int],
     store_last_hidden_states: bool,
+    mtp: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the payload contract without starting a backend.
 
@@ -124,6 +125,23 @@ def build_target_feature_contract(
             "shape": ["sequence", target_hidden_size], "layout": "sequence_hidden",
             "value_stage": "post_norm",
         }
+    if mtp is not None:
+        if (not isinstance(mtp, Mapping) or not {"native_config", "embedding_key"} <= set(mtp)
+                or set(mtp) - {"native_config", "embedding_key", "alignment"}):
+            raise FeatureContractError("MTP capture requires native_config and embedding_key")
+        native = mtp["native_config"]
+        if (not isinstance(native, Mapping) or native.get("model_type") != "qwen3_5_text"
+                or native.get("hidden_size") != target_hidden_size
+                or native.get("num_hidden_layers") != target_num_hidden_layers
+                or not isinstance(mtp["embedding_key"], str) or not mtp["embedding_key"]):
+            raise FeatureContractError("MTP capture differs from its Target binding")
+        if mtp.get("alignment", "anchor_post_norm_v1") != "anchor_post_norm_v1":
+            raise FeatureContractError("Unsupported native MTP feature alignment")
+        tensors["mtp_hidden_states"] = {
+            "semantic": "native_mtp_prediction_hidden_state", "dtype": "bfloat16",
+            "shape": ["sequence", target_hidden_size], "layout": "sequence_hidden",
+            "value_stage": "post_norm", "alignment": "anchor_post_norm_v1",
+        }
     omissions = []
     target_distribution = "token_labels"
     if store_last_hidden_states:
@@ -156,6 +174,7 @@ def build_target_feature_contract(
         "aux_hidden_state_layers": list(aux_hidden_state_layers),
         "tensors": tensors,
         "omissions": omissions,
+        **({"mtp": {**copy.deepcopy(dict(mtp)), "alignment": "anchor_post_norm_v1"}} if mtp is not None else {}),
     }
     contract["contract_id"] = _contract_id(contract)
     return contract
@@ -185,6 +204,8 @@ def validate_feature_contract(contract: Mapping[str, Any]) -> None:
     tensors = contract.get("tensors")
     if not isinstance(tensors, Mapping) or not tensors:
         raise FeatureContractError("Target feature contract must declare tensors")
+    if ("mtp" in contract) != ("mtp_hidden_states" in tensors):
+        raise FeatureContractError("MTP producer identity and tensor must be declared together")
 
 
 class FeatureContractRuntime:
@@ -395,9 +416,13 @@ def shared_feature_union(contracts):
                 reference = next(c["tensors"][name] for c in contracts if name in c["tensors"])
             if tensor != reference:
                 raise FeatureContractError("Shared source has incompatible tensor values: " + name)
+    mtp = [c["mtp"] for c in contracts if "mtp" in c]
+    if mtp and any(policy != mtp[0] for policy in mtp):
+        raise FeatureContractError("Shared source has incompatible native MTP bindings")
     return build_target_feature_contract(
         drafter_family="shared_source", target_hidden_size=first["target_hidden_size"],
         target_num_hidden_layers=first["target_num_hidden_layers"],
         aux_hidden_state_layers=sorted({layer for c in contracts for layer in c["aux_hidden_state_layers"]}),
         store_last_hidden_states=any("last_hidden_states" in c["tensors"] for c in contracts),
+        **({"mtp": mtp[0]} if mtp else {}),
     )

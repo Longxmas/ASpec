@@ -325,7 +325,8 @@ class DFlashTrainer(Trainer):
             status["mtp_conditioning"] = {
                 **mtp_conditioning_semantics(draft.config.to_dict()),
                 "prediction_start": self.dflash.prediction_start,
-                "frozen_source_parameters": sum(p.numel() for p in draft.mtp_source.parameters()),
+                "frozen_source_parameters": (sum(p.numel() for p in draft.mtp_source.parameters())
+                                             if draft.mtp_source is not None else 0),
                 "fusion_parameters": (sum(p.numel() for p in draft.mtp_fusion.parameters())
                                       if draft.mtp_fusion is not None else 0),
                 "target_binding_validated": self._mtp_binding_validated,
@@ -333,7 +334,8 @@ class DFlashTrainer(Trainer):
                     "python": sys.executable,
                     "trainer": inspect.getfile(type(self)),
                     "draft": inspect.getfile(type(draft)),
-                    "native_features": inspect.getfile(type(draft.mtp_source)),
+                    "native_features": (inspect.getfile(type(draft.mtp_source))
+                                        if draft.mtp_source is not None else None),
                 },
             }
         layers = list(getattr(draft, "layers", []))
@@ -454,6 +456,17 @@ class DFlashTrainer(Trainer):
                 with torch.no_grad():
                     last_hidden_states = self.verifier_norm(last_hidden_states)
 
+        prefix_kwargs = {}
+        from aspec.config.mtp_conditioning import target_mtp_features
+
+        if target_mtp_features(getattr(self.dflash, "mtp_conditioning", None)):
+            from aspec.models.dmtp import MTPPrefix
+
+            mtp = batch.get("mtp_hidden_states")
+            if mtp is None or mtp.shape[:2] != input_ids.shape:
+                raise ValueError("Target-side MTP conditioning requires aligned mtp_hidden_states")
+            prefix_kwargs["draft_prefix"] = MTPPrefix(mtp[:, 1:].to(device, non_blocking=True).detach())
+
         (
             loss,
             accuracy,
@@ -474,6 +487,7 @@ class DFlashTrainer(Trainer):
             anchor_seed=anchor_seed,
             packed_document_lengths=batch.get("packed_document_lengths"),
             attention_mask=attention_mask,
+            **prefix_kwargs,
         )
 
         return (
