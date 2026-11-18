@@ -45,13 +45,18 @@ def quantize_rows(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 @triton.jit
-def _small_rows(X, Q, S, ROWS: tl.constexpr, WIDTH: tl.constexpr, BLOCK: tl.constexpr):
+def _maximum_with_nan(a, b):
+    return tl.maximum(a, b, propagate_nan=tl.PropagateNan.ALL)
+
+
+@triton.jit(do_not_specialize=["ROWS"])
+def _small_rows(X, Q, S, ROWS, WIDTH: tl.constexpr, BLOCK: tl.constexpr):
     row = tl.program_id(0).to(tl.int64)
     col = tl.arange(0, BLOCK)
     value = tl.load(X + row * WIDTH + col, (row < ROWS) & (col < WIDTH), other=0).to(tl.float32)
-    maximum = tl.maximum(tl.max(tl.abs(value), 0), 1e-12)
+    maximum = _maximum_with_nan(tl.reduce(tl.abs(value), 0, _maximum_with_nan), 1e-12)
     scale = tl.exp2(tl.ceil(tl.log2(maximum / 448.0)))
-    quantized = tl.minimum(tl.maximum(value / scale, -448.0), 448.0)
+    quantized = tl.clamp(value / scale, -448.0, 448.0, propagate_nan=tl.PropagateNan.ALL)
     tl.store(Q + row * WIDTH + col, quantized, col < WIDTH)
     tl.store(S + row, scale)
 
@@ -62,22 +67,22 @@ def _row_partials(X, P, WIDTH: tl.constexpr, TILES: tl.constexpr, BLOCK: tl.cons
     tile = tl.program_id(1)
     col = tile * BLOCK + tl.arange(0, BLOCK)
     value = tl.load(X + row * WIDTH + col, col < WIDTH, other=0).to(tl.float32)
-    maximum = tl.max(tl.abs(value), 0)
+    maximum = tl.reduce(tl.abs(value), 0, _maximum_with_nan)
     tl.store(P + row * TILES + tile, maximum)
 
 
-@triton.jit
-def _quantize_tiles(X, P, Q, S, ROWS: tl.constexpr, WIDTH: tl.constexpr,
+@triton.jit(do_not_specialize=["ROWS"])
+def _quantize_tiles(X, P, Q, S, ROWS, WIDTH: tl.constexpr,
                     TILES: tl.constexpr, REDUCE: tl.constexpr, BLOCK: tl.constexpr):
     row = tl.program_id(0).to(tl.int64)
     tile = tl.program_id(1)
     indices = tl.arange(0, REDUCE)
     partial = tl.load(P + row * TILES + indices, (row < ROWS) & (indices < TILES), other=0)
-    maximum = tl.maximum(tl.max(partial, 0), 1e-12)
+    maximum = _maximum_with_nan(tl.reduce(partial, 0, _maximum_with_nan), 1e-12)
     scale = tl.exp2(tl.ceil(tl.log2(maximum / 448.0)))
     col = tile * BLOCK + tl.arange(0, BLOCK)
     value = tl.load(X + row * WIDTH + col, (row < ROWS) & (col < WIDTH), other=0).to(tl.float32)
-    quantized = tl.minimum(tl.maximum(value / scale, -448.0), 448.0)
+    quantized = tl.clamp(value / scale, -448.0, 448.0, propagate_nan=tl.PropagateNan.ALL)
     tl.store(Q + row * WIDTH + col, quantized, col < WIDTH)
     if tile == 0:
         tl.store(S + row, scale)

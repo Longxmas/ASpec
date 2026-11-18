@@ -120,6 +120,38 @@ def test_tiled_quantization_and_padding_match_independent_reference(width):
     assert torch.isfinite(scale).all()
 
 
+@pytest.mark.parametrize("width", [32, 151936])
+def test_quantization_preserves_nan_rows_and_padding(width):
+    torch.manual_seed(53)
+    values = torch.randn(17, width, device="cuda", dtype=torch.bfloat16)
+    values[0].zero_()
+    # Exercise the first, middle and final reduction tiles, including a tail row.
+    values[1, 0] = values[4, width // 2] = values[16, -1] = float("nan")
+    bits, scale = quantize_activation(values)
+    invalid = values.isnan().any(dim=1)
+    assert scale[:17][invalid].isnan().all()
+    assert bits[:17][invalid].float().isnan().all()
+    actual = bits[:17][~invalid].double() * scale[:17][~invalid].double()
+    torch.testing.assert_close(actual, reference_rows(values[~invalid]), rtol=0, atol=0)
+    assert torch.count_nonzero(bits[17:].float()) == 0
+    assert scale[17:].isfinite().all()
+
+
+def test_nan_propagates_through_forward_and_input_gradient():
+    weight = torch.ones(8208, 32, device="cuda", dtype=torch.bfloat16)
+    hidden = torch.ones(3, 32, device="cuda", dtype=torch.bfloat16)
+    hidden[1, -1] = float("nan")
+    hidden.requires_grad_()
+    output = FrozenFP8Head(weight)(hidden)
+    assert output[1].isnan().all()
+    assert output[[0, 2]].isfinite().all()
+    upstream = torch.ones_like(output)
+    upstream[2, -1] = float("nan")
+    output.backward(upstream)
+    assert hidden.grad[2].isnan().all()
+    assert hidden.grad[:2].isfinite().all()
+
+
 def test_native_dspark_losses_keep_teacher_and_validation_bf16(monkeypatch):
     from types import SimpleNamespace
 
