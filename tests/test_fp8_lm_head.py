@@ -120,6 +120,25 @@ def test_tiled_quantization_and_padding_match_independent_reference(width):
     assert torch.isfinite(scale).all()
 
 
+@pytest.mark.parametrize("width", [32, 8208])
+def test_quantization_uses_input_device(width):
+    if torch.cuda.device_count() < 2 or torch.cuda.get_device_capability(1) != (9, 0):
+        pytest.skip("requires a second visible SM90 CUDA device")
+
+    with torch.cuda.device(1):
+        values = torch.zeros((17, width), device="cuda:1", dtype=torch.bfloat16)
+        values[:, 0] = 0.5
+        values[:, -1] = -1
+    with torch.cuda.device(0):
+        bits, scale = quantize_activation(values)
+        assert torch.cuda.current_device() == 0
+
+    assert bits.device == scale.device == values.device
+    with torch.cuda.device(1):
+        actual = bits[:17].float() * scale[:17]
+        torch.testing.assert_close(actual, values.float(), rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("width", [32, 151936])
 def test_quantization_preserves_nan_rows_and_padding(width):
     torch.manual_seed(53)

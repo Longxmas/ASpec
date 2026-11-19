@@ -100,16 +100,17 @@ def quantize_activation(x):
     padded = triton.cdiv(rows, 16) * 16
     bits = torch.empty((padded, width), dtype=torch.float8_e4m3fn, device=x.device)
     scale = torch.empty((padded, 1), dtype=torch.float32, device=x.device)
-    if width <= 8192:
-        _small_rows[(padded,)](x, bits, scale, rows, width, triton.next_power_of_2(width))
-    else:
-        block = 4096
-        tiles = triton.cdiv(width, block)
-        partials = torch.empty((rows, tiles), dtype=torch.float32, device=x.device)
-        _row_partials[(rows, tiles)](x, partials, width, tiles, block)
-        _quantize_tiles[(padded, tiles)](
-            x, partials, bits, scale, rows, width, tiles, triton.next_power_of_2(tiles), block,
-        )
+    with torch.cuda.device(x.device):
+        if width <= 8192:
+            _small_rows[(padded,)](x, bits, scale, rows, width, triton.next_power_of_2(width))
+        else:
+            block = 4096
+            tiles = triton.cdiv(width, block)
+            partials = torch.empty((rows, tiles), dtype=torch.float32, device=x.device)
+            _row_partials[(rows, tiles)](x, partials, width, tiles, block)
+            _quantize_tiles[(padded, tiles)](
+                x, partials, bits, scale, rows, width, tiles, triton.next_power_of_2(tiles), block,
+            )
     return bits, scale
 
 
